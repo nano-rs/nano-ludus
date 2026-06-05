@@ -1,0 +1,27 @@
+---
+# Vector Aggregator Configuration
+
+# ---- Upstream SIEM target ----
+# IP of the SIEM box running the nanosiem_stack role
+nanosiem_siem_ip: ""  # REQUIRED - set in role_vars
+
+# Port the SIEM's Vector listens on for the Vector protocol
+nanosiem_siem_vector_port: 6000
+
+# Auth token for the SIEM's HTTP ingestion endpoint
+nanosiem_vector_auth_token: "nanosiem-lab-token"
+
+# ---- Aggregator listen ports ----
+# Port for Vector-to-Vector protocol (agents connect here)
+aggregator_vector_port: 9000
+
+# ---- Deploy directory ----
+aggregator_deploy_dir: /opt/vector-aggregator
+
+# ---- Buffering ----
+# Disk buffer max size in bytes (1GB default)
+aggregator_buffer_max_bytes: 1073741824
+
+# ---- Processing ----
+# Add source_type enrichment for Windows events
+aggregator_enrich_windows_events: true

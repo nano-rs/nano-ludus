@@ -1,0 +1,13 @@
+---
+# ---- Sysmon Configuration ----
+# URL to download Sysmon (Microsoft Sysinternals)
+sysmon_download_url: "https://download.sysinternals.com/files/Sysmon.zip"
+
+# Sysmon config — SwiftOnSecurity is the standard baseline
+sysmon_config_url: "https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml"
+
+# Install directory
+sysmon_install_dir: 'C:\Program Files\Sysmon'
+
+# Architecture (Sysmon64.exe for 64-bit)
+sysmon_exe: "Sysmon64.exe"

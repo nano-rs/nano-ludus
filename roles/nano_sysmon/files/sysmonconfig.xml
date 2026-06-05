@@ -1,0 +1,318 @@
+<Sysmon schemaversion="4.90">
+  <!--
+    NanoSIEM Sysmon Configuration
+    EDR-like telemetry for threat hunting and investigation.
+    Coverage: Process, Network, DNS, File, Registry, Credential Access, Lateral Movement
+    Blocking: Executable drops in user temp/downloads dirs from unsigned processes
+  -->
+
+  <HashAlgorithms>SHA256,MD5</HashAlgorithms>
+  <CheckRevocation>false</CheckRevocation>
+  <DnsLookup>false</DnsLookup>
+
+  <EventFiltering>
+
+    <!-- ================================================================
+         Event 1: Process Creation — CRITICAL
+         Full command line, parent process, hashes, user context
+         Filter: Exclude known noisy system processes
+    ================================================================ -->
+    <RuleGroup name="ProcessCreate" groupRelation="or">
+      <ProcessCreate onmatch="exclude">
+        <!-- Windows noise -->
+        <Image condition="is">C:\Windows\System32\conhost.exe</Image>
+        <Image condition="is">C:\Windows\System32\RuntimeBroker.exe</Image>
+        <Image condition="is">C:\Windows\System32\backgroundTaskHost.exe</Image>
+        <Image condition="is">C:\Windows\System32\SearchProtocolHost.exe</Image>
+        <Image condition="is">C:\Windows\System32\SearchFilterHost.exe</Image>
+        <Image condition="is">C:\Windows\System32\audiodg.exe</Image>
+        <Image condition="is">C:\Windows\System32\MusNotifyIcon.exe</Image>
+        <ParentImage condition="is">C:\Windows\System32\SgrmBroker.exe</ParentImage>
+      </ProcessCreate>
+    </RuleGroup>
+
+    <!-- Event 2: FileCreateTime — disabled (too noisy, low value) -->
+    <RuleGroup name="FileCreateTime" groupRelation="or">
+      <FileCreateTime onmatch="include" />
+    </RuleGroup>
+
+    <!-- ================================================================
+         Event 3: Network Connection — CRITICAL
+         Outbound connections with process context
+         Filter: Exclude browser/update noise, keep everything else
+    ================================================================ -->
+    <RuleGroup name="NetworkConnect" groupRelation="or">
+      <NetworkConnect onmatch="exclude">
+        <Image condition="is">C:\Windows\System32\svchost.exe</Image>
+        <Image condition="end with">MsMpEng.exe</Image>
+        <Image condition="end with">MpCmdRun.exe</Image>
+        <DestinationPort condition="is">137</DestinationPort>
+        <DestinationPort condition="is">138</DestinationPort>
+      </NetworkConnect>
+    </RuleGroup>
+
+    <!-- ================================================================
+         Event 5: Process Terminated
+         Track process lifetime — useful for short-lived malware
+    ================================================================ -->
+    <RuleGroup name="ProcessTerminate" groupRelation="or">
+      <ProcessTerminate onmatch="include">
+        <Image condition="contains">\Users\</Image>
+        <Image condition="contains">\Temp\</Image>
+        <Image condition="contains">\ProgramData\</Image>
+        <Image condition="contains">\AppData\</Image>
+        <Image condition="end with">.exe</Image>
+      </ProcessTerminate>
+    </RuleGroup>
+
+    <!-- ================================================================
+         Event 6: Driver Loaded
+         Rootkit/BYOVD detection — all driver loads
+    ================================================================ -->
+    <RuleGroup name="DriverLoad" groupRelation="or">
+      <DriverLoad onmatch="exclude">
+        <Signature condition="contains">Microsoft</Signature>
+      </DriverLoad>
+    </RuleGroup>
+
+    <!-- ================================================================
+         Event 7: Image Loaded (DLL)
+         DLL sideloading/injection detection
+         Filter: Only unsigned or unusual paths to avoid extreme noise
+    ================================================================ -->
+    <RuleGroup name="ImageLoad" groupRelation="or">
+      <ImageLoad onmatch="include">
+        <Signed condition="is">false</Signed>
+        <ImageLoaded condition="contains">\Users\</ImageLoaded>
+        <ImageLoaded condition="contains">\Temp\</ImageLoaded>
+        <ImageLoaded condition="contains">\ProgramData\</ImageLoaded>
+        <ImageLoaded condition="contains">\AppData\</ImageLoaded>
+        <ImageLoaded condition="end with">.dll</ImageLoaded>
+      </ImageLoad>
+    </RuleGroup>
+
+    <!-- ================================================================
+         Event 8: CreateRemoteThread — HIGH VALUE
+         Process injection detection (Cobalt Strike, Meterpreter, etc.)
+    ================================================================ -->
+    <RuleGroup name="CreateRemoteThread" groupRelation="or">
+      <CreateRemoteThread onmatch="exclude">
+        <!-- Known legitimate remote thread creators -->
+        <SourceImage condition="is">C:\Windows\System32\csrss.exe</SourceImage>
+        <SourceImage condition="is">C:\Windows\System32\lsass.exe</SourceImage>
+        <SourceImage condition="is">C:\Windows\System32\services.exe</SourceImage>
+        <SourceImage condition="is">C:\Windows\System32\svchost.exe</SourceImage>
+        <SourceImage condition="is">C:\Windows\System32\wininit.exe</SourceImage>
+      </CreateRemoteThread>
+    </RuleGroup>
+
+    <!-- ================================================================
+         Event 9: RawAccessRead
+         Direct disk read — credential dumping (SAM/NTDS.dit)
+    ================================================================ -->
+    <RuleGroup name="RawAccessRead" groupRelation="or">
+      <RawAccessRead onmatch="include">
+        <Device condition="contains">Device</Device>
+      </RawAccessRead>
+    </RuleGroup>
+
+    <!-- ================================================================
+         Event 10: ProcessAccess — CRITICAL
+         Credential dumping detection (LSASS access)
+    ================================================================ -->
+    <RuleGroup name="ProcessAccess" groupRelation="or">
+      <ProcessAccess onmatch="include">
+        <TargetImage condition="is">C:\Windows\System32\lsass.exe</TargetImage>
+        <GrantedAccess condition="is">0x1010</GrantedAccess>
+        <GrantedAccess condition="is">0x1038</GrantedAccess>
+        <GrantedAccess condition="is">0x1438</GrantedAccess>
+        <GrantedAccess condition="is">0x143a</GrantedAccess>
+        <GrantedAccess condition="is">0x1fffff</GrantedAccess>
+      </ProcessAccess>
+    </RuleGroup>
+
+    <!-- ================================================================
+         Event 11: FileCreate
+         New executables, scripts, and files in suspicious locations
+    ================================================================ -->
+    <RuleGroup name="FileCreate" groupRelation="or">
+      <FileCreate onmatch="include">
+        <TargetFilename condition="end with">.exe</TargetFilename>
+        <TargetFilename condition="end with">.dll</TargetFilename>
+        <TargetFilename condition="end with">.sys</TargetFilename>
+        <TargetFilename condition="end with">.ps1</TargetFilename>
+        <TargetFilename condition="end with">.bat</TargetFilename>
+        <TargetFilename condition="end with">.cmd</TargetFilename>
+        <TargetFilename condition="end with">.vbs</TargetFilename>
+        <TargetFilename condition="end with">.js</TargetFilename>
+        <TargetFilename condition="end with">.hta</TargetFilename>
+        <TargetFilename condition="end with">.scr</TargetFilename>
+        <TargetFilename condition="end with">.lnk</TargetFilename>
+        <TargetFilename condition="end with">.iso</TargetFilename>
+        <TargetFilename condition="end with">.vhd</TargetFilename>
+        <TargetFilename condition="end with">.vhdx</TargetFilename>
+        <TargetFilename condition="end with">.7z</TargetFilename>
+        <TargetFilename condition="end with">.rar</TargetFilename>
+        <TargetFilename condition="end with">.zip</TargetFilename>
+        <TargetFilename condition="contains">\Startup\</TargetFilename>
+        <TargetFilename condition="contains">\Start Menu\</TargetFilename>
+        <TargetFilename condition="contains">\Content.Outlook\</TargetFilename>
+        <TargetFilename condition="contains">\Downloads\</TargetFilename>
+      </FileCreate>
+    </RuleGroup>
+
+    <!-- ================================================================
+         Event 12/13/14: Registry Events
+         Persistence, defense evasion, config changes
+    ================================================================ -->
+    <RuleGroup name="RegistryEvent" groupRelation="or">
+      <RegistryEvent onmatch="include">
+        <!-- Persistence locations -->
+        <TargetObject condition="contains">\CurrentVersion\Run</TargetObject>
+        <TargetObject condition="contains">\CurrentVersion\RunOnce</TargetObject>
+        <TargetObject condition="contains">\CurrentVersion\Explorer\Shell Folders</TargetObject>
+        <TargetObject condition="contains">\CurrentVersion\Explorer\User Shell Folders</TargetObject>
+        <TargetObject condition="contains">\CurrentVersion\Winlogon</TargetObject>
+        <TargetObject condition="contains">\Policies\Explorer\Run</TargetObject>
+        <!-- Services -->
+        <TargetObject condition="contains">\Services\</TargetObject>
+        <!-- Scheduled tasks -->
+        <TargetObject condition="contains">\Schedule\TaskCache\</TargetObject>
+        <!-- COM hijacking -->
+        <TargetObject condition="contains">\InprocServer32</TargetObject>
+        <!-- Image File Execution Options (debugger persistence) -->
+        <TargetObject condition="contains">\Image File Execution Options\</TargetObject>
+        <!-- AppInit DLLs -->
+        <TargetObject condition="contains">\AppInit_DLLs</TargetObject>
+        <!-- Security providers -->
+        <TargetObject condition="contains">\SecurityProviders</TargetObject>
+        <!-- LSA -->
+        <TargetObject condition="contains">\Lsa\</TargetObject>
+        <!-- Disable security tools -->
+        <TargetObject condition="contains">\Windows Defender\</TargetObject>
+        <TargetObject condition="contains">\DisableAntiSpyware</TargetObject>
+        <TargetObject condition="contains">\DisableRealtimeMonitoring</TargetObject>
+        <!-- PowerShell -->
+        <TargetObject condition="contains">\PowerShell\</TargetObject>
+        <!-- Terminal Server / RDP -->
+        <TargetObject condition="contains">\Terminal Server\</TargetObject>
+        <TargetObject condition="contains">\fDenyTSConnections</TargetObject>
+      </RegistryEvent>
+    </RuleGroup>
+
+    <!-- ================================================================
+         Event 15: FileCreateStreamHash
+         Alternate Data Streams — MOTW bypass, hidden payloads
+    ================================================================ -->
+    <RuleGroup name="FileCreateStreamHash" groupRelation="or">
+      <FileCreateStreamHash onmatch="include">
+        <TargetFilename condition="end with">.exe</TargetFilename>
+        <TargetFilename condition="end with">.dll</TargetFilename>
+        <TargetFilename condition="end with">.ps1</TargetFilename>
+        <TargetFilename condition="end with">.bat</TargetFilename>
+        <TargetFilename condition="end with">.hta</TargetFilename>
+        <TargetFilename condition="contains">Zone.Identifier</TargetFilename>
+      </FileCreateStreamHash>
+    </RuleGroup>
+
+    <!-- ================================================================
+         Event 17/18: Pipe Created/Connected
+         C2 communication, lateral movement (PsExec, Cobalt Strike)
+    ================================================================ -->
+    <RuleGroup name="PipeEvent" groupRelation="or">
+      <PipeEvent onmatch="exclude">
+        <PipeName condition="is">\wkssvc</PipeName>
+        <PipeName condition="is">\srvsvc</PipeName>
+        <PipeName condition="is">\lsass</PipeName>
+      </PipeEvent>
+    </RuleGroup>
+
+    <!-- ================================================================
+         Event 19/20/21: WMI Events
+         Persistence via WMI subscriptions
+    ================================================================ -->
+    <RuleGroup name="WmiEvent" groupRelation="or">
+      <WmiEvent onmatch="include">
+        <Operation condition="contains">Created</Operation>
+        <Operation condition="contains">Modified</Operation>
+        <Operation condition="contains">Deleted</Operation>
+      </WmiEvent>
+    </RuleGroup>
+
+    <!-- ================================================================
+         Event 22: DNS Query — CRITICAL
+         All DNS lookups with process context
+         Filter: Exclude system noise
+    ================================================================ -->
+    <RuleGroup name="DnsQuery" groupRelation="or">
+      <DnsQuery onmatch="exclude">
+        <QueryName condition="end with">.arpa</QueryName>
+        <Image condition="is">C:\Windows\System32\svchost.exe</Image>
+      </DnsQuery>
+    </RuleGroup>
+
+    <!-- ================================================================
+         Event 23: FileDelete (archived)
+         Deleted files with hash — evidence preservation
+    ================================================================ -->
+    <RuleGroup name="FileDelete" groupRelation="or">
+      <FileDelete onmatch="include">
+        <TargetFilename condition="end with">.exe</TargetFilename>
+        <TargetFilename condition="end with">.dll</TargetFilename>
+        <TargetFilename condition="end with">.ps1</TargetFilename>
+        <TargetFilename condition="end with">.bat</TargetFilename>
+        <TargetFilename condition="end with">.vbs</TargetFilename>
+        <TargetFilename condition="contains">\Temp\</TargetFilename>
+        <TargetFilename condition="contains">\Downloads\</TargetFilename>
+      </FileDelete>
+    </RuleGroup>
+
+    <!-- ================================================================
+         Event 25: Process Tampering
+         Detect process hollowing, herpaderping, ghosting
+    ================================================================ -->
+    <RuleGroup name="ProcessTampering" groupRelation="or">
+      <ProcessTampering onmatch="include">
+        <Type condition="contains">Image</Type>
+      </ProcessTampering>
+    </RuleGroup>
+
+    <!-- ================================================================
+         Event 26: FileDeleteDetected (logged only, not archived)
+         Broader file deletion tracking
+    ================================================================ -->
+    <RuleGroup name="FileDeleteDetected" groupRelation="or">
+      <FileDeleteDetected onmatch="include">
+        <TargetFilename condition="end with">.exe</TargetFilename>
+        <TargetFilename condition="end with">.dll</TargetFilename>
+        <TargetFilename condition="contains">\Temp\</TargetFilename>
+      </FileDeleteDetected>
+    </RuleGroup>
+
+    <!-- ================================================================
+         Event 27: FileBlockExecutable
+         BLOCKING — Prevent executable drops in user-writable dirs
+         from unsigned/suspicious parent processes
+    ================================================================ -->
+    <RuleGroup name="FileBlockExecutable" groupRelation="or">
+      <FileBlockExecutable onmatch="include">
+        <TargetFilename condition="contains">\AppData\Local\Temp\</TargetFilename>
+        <TargetFilename condition="contains">\Content.Outlook\</TargetFilename>
+      </FileBlockExecutable>
+    </RuleGroup>
+
+    <!-- ================================================================
+         Event 29: FileExecutableDetected
+         Track all new executables written to disk
+    ================================================================ -->
+    <RuleGroup name="FileExecutableDetected" groupRelation="or">
+      <FileExecutableDetected onmatch="include">
+        <TargetFilename condition="contains">\Users\</TargetFilename>
+        <TargetFilename condition="contains">\ProgramData\</TargetFilename>
+        <TargetFilename condition="contains">\Temp\</TargetFilename>
+        <TargetFilename condition="contains">\Windows\Temp\</TargetFilename>
+      </FileExecutableDetected>
+    </RuleGroup>
+
+  </EventFiltering>
+</Sysmon>

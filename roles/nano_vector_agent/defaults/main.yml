@@ -1,0 +1,47 @@
+---
+# Vector Windows Agent Configuration
+
+# ---- Aggregator target ----
+# IP of the Vector aggregator (proxy box)
+vector_aggregator_ip: ""  # REQUIRED - set in role_vars
+vector_aggregator_port: 9000
+
+# ---- Vector version ----
+# Using nightly build — windows_event_log source merged 2026-03-13, not yet in a stable release.
+# Switch to a stable version+URL once 0.55.0+ ships with the windows_event_log source.
+vector_version: "nightly"
+vector_msi_url: "https://packages.timber.io/vector/nightly/latest/vector-nightly-x64.msi"
+
+# ---- Windows Event Log channels ----
+vector_eventlog_channels:
+  - "Application"
+  - "System"
+  - "Security"
+  - "Microsoft-Windows-Sysmon/Operational"
+  - "Microsoft-Windows-PowerShell/Operational"
+  - "Microsoft-Windows-Windows Defender/Operational"
+
+# Read existing events on first run (backfill)
+vector_read_existing_events: false
+
+# Rate limit (events per second per channel)
+vector_events_per_second: 500
+
+# Max field length for event_data values (truncation)
+vector_max_event_data_length: 2000
+
+# ---- Install paths ----
+vector_install_dir: 'C:\Program Files\Vector'
+vector_config_dir: 'C:\ProgramData\Vector'
+vector_data_dir: 'C:\ProgramData\Vector\data'
+
+# ---- Buffer ----
+# Disk buffer max size in bytes (256MB default for agent)
+vector_buffer_max_bytes: 536870912
+
+# ---- Conduit MITM Proxy (optional) ----
+# Set to configure system proxy + install CA cert on this Windows box
+conduit_proxy_enabled: false
+conduit_proxy_ip: ""        # IP of the proxy box (same as aggregator typically)
+conduit_proxy_port: 8888
+conduit_api_port: 8443

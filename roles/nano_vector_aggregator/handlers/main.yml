@@ -1,0 +1,5 @@
+---
+- name: restart vector-aggregator
+  ansible.builtin.shell: |
+    cd {{ aggregator_deploy_dir }} && docker compose up -d --force-recreate
+  changed_when: true

@@ -1,0 +1,146 @@
+---
+- name: Validate aggregator IP is set
+  ansible.builtin.assert:
+    that:
+      - vector_aggregator_ip | length > 0
+    fail_msg: "vector_aggregator_ip must be set in role_vars"
+
+- name: Set timezone to Eastern
+  ansible.windows.win_timezone:
+    timezone: Eastern Standard Time
+
+# w32tm /resync needs the Windows Time service running. On the DC/member servers
+# it already is; on the Win11 workstation W32Time is trigger-started and may be
+# stopped, so `/resync` errors with 0x80070426 (NAN-1227). Start it first.
+- name: Ensure Windows Time service is running
+  ansible.windows.win_service:
+    name: W32Time
+    start_mode: auto
+    state: started
+
+- name: Sync Windows clock (best-effort)
+  ansible.windows.win_shell: w32tm /resync /force
+  register: w32tm_resync
+  changed_when: w32tm_resync.rc == 0
+  failed_when: false
+
+- name: Create Vector directories
+  ansible.windows.win_file:
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - "{{ vector_config_dir }}"
+    - "{{ vector_data_dir }}"
+
+- name: Check if Vector is already installed
+  ansible.windows.win_stat:
+    path: "{{ vector_install_dir }}\\bin\\vector.exe"
+  register: vector_installed
+
+- name: Download Vector MSI
+  ansible.windows.win_get_url:
+    url: "{{ vector_msi_url }}"
+    dest: "{{ vector_config_dir }}\\vector-installer.msi"
+  when: not vector_installed.stat.exists
+
+- name: Install Vector
+  ansible.windows.win_package:
+    path: "{{ vector_config_dir }}\\vector-installer.msi"
+    state: present
+    arguments: /quiet /norestart
+  when: not vector_installed.stat.exists
+
+- name: Remove default Vector config (ships with MSI, conflicts with ours)
+  ansible.windows.win_file:
+    path: "{{ vector_install_dir }}\\config\\vector.yaml"
+    state: absent
+
+- name: Template Vector agent config
+  ansible.windows.win_template:
+    src: vector-agent.toml.j2
+    dest: "{{ vector_config_dir }}\\vector.toml"
+  notify: restart vector agent
+
+- name: Create Vector Windows service
+  ansible.windows.win_service:
+    name: vector
+    display_name: "Vector Log Agent"
+    description: "Vector log collection agent - ships to NanoSIEM aggregator"
+    path: '"{{ vector_install_dir }}\bin\vector.exe" --config-toml "{{ vector_config_dir }}\vector.toml"'
+    start_mode: auto
+    state: started
+    username: LocalSystem
+
+- name: Ensure Vector service is running
+  ansible.windows.win_service:
+    name: vector
+    state: started
+
+# =========================================================================
+# Conduit MITM Proxy — system proxy + CA cert install
+# =========================================================================
+- name: Configure Conduit MITM proxy
+  when: conduit_proxy_enabled
+  block:
+    - name: Download Conduit CA certificate
+      ansible.windows.win_get_url:
+        url: "http://{{ conduit_proxy_ip }}:{{ conduit_api_port }}/api/v1/ca/cert"
+        dest: "{{ vector_config_dir }}\\conduit-ca.pem"
+      register: ca_download
+      retries: 60
+      delay: 10
+      until: ca_download is not failed
+
+    - name: Install Conduit CA into Windows trusted root store
+      ansible.windows.win_shell: |
+        certutil -addstore -f "Root" "{{ vector_config_dir }}\conduit-ca.pem"
+
+    - name: Set system proxy (machine-wide HKLM)
+      ansible.windows.win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings
+        name: "{{ item.name }}"
+        data: "{{ item.data }}"
+        type: "{{ item.type }}"
+      loop:
+        - { name: "ProxyEnable", data: 1, type: dword }
+        - { name: "ProxyServer", data: "{{ conduit_proxy_ip }}:{{ conduit_proxy_port }}", type: string }
+        - { name: "ProxyOverride", data: "localhost;127.0.0.1;10.*;*.lab.local;<local>", type: string }
+
+    - name: Set proxy for all users (default user HKCU via HKU\.DEFAULT)
+      ansible.windows.win_regedit:
+        path: HKU:\.DEFAULT\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings
+        name: "{{ item.name }}"
+        data: "{{ item.data }}"
+        type: "{{ item.type }}"
+      loop:
+        - { name: "ProxyEnable", data: 1, type: dword }
+        - { name: "ProxyServer", data: "{{ conduit_proxy_ip }}:{{ conduit_proxy_port }}", type: string }
+        - { name: "ProxyOverride", data: "localhost;127.0.0.1;10.*;*.lab.local;<local>", type: string }
+
+    - name: Set proxy for current logged-in users
+      ansible.windows.win_shell: |
+        # Set for all user SIDs in registry
+        $sids = Get-ChildItem "Registry::HKU" | Where-Object { $_.Name -match 'S-1-5-21' -and $_.Name -notmatch '_Classes' }
+        foreach ($sid in $sids) {
+            $path = "Registry::$($sid.Name)\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings"
+            Set-ItemProperty -Path $path -Name ProxyEnable -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path $path -Name ProxyServer -Value "{{ conduit_proxy_ip }}:{{ conduit_proxy_port }}" -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path $path -Name ProxyOverride -Value "localhost;127.0.0.1;10.*;*.lab.local;<local>" -Force -ErrorAction SilentlyContinue
+        }
+
+    - name: Set WinHTTP proxy (for services/system processes)
+      ansible.windows.win_shell: |
+        netsh winhttp set proxy "{{ conduit_proxy_ip }}:{{ conduit_proxy_port }}" "localhost;127.0.0.1;10.*;*.lab.local"
+
+- name: Print agent info
+  ansible.builtin.debug:
+    msg: |
+      ============================================
+      Vector Agent installed on {{ ansible_hostname }}!
+      ============================================
+      Config:       {{ vector_config_dir }}\vector.toml
+      Data dir:     {{ vector_data_dir }}
+      Shipping to:  {{ vector_aggregator_ip }}:{{ vector_aggregator_port }}
+      Channels:     {{ vector_eventlog_channels | join(', ') }}
+      {{ 'Proxy:        ' + conduit_proxy_ip + ':' + (conduit_proxy_port | string) + ' (MITM enabled)' if conduit_proxy_enabled else '' }}
+      ============================================

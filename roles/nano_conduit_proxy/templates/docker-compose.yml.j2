@@ -1,0 +1,91 @@
+version: '3.8'
+
+# Conduit MITM Proxy Stack
+# Deployed by Ludus Ansible Role alongside the Vector aggregator
+
+services:
+  conduit-dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly
+    container_name: conduit-dragonfly
+    command: ["--maxmemory", "512mb", "--proactor_threads", "1"]
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "{{ conduit_dragonfly_port }}:6379"
+    volumes:
+      - conduit-dragonfly-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  conduit-proxy:
+    image: {{ conduit_proxy_image }}:{{ conduit_version }}
+    container_name: conduit-proxy
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      CONDUIT_CONFIG: /etc/conduit/conduit.toml
+      RUST_LOG: "{{ conduit_log_level }}"
+    ports:
+      - "{{ conduit_proxy_port }}:8888"
+      - "{{ conduit_metrics_port }}:9091"
+    volumes:
+      - ./config/conduit.toml:/etc/conduit/conduit.toml:ro
+      - conduit-logs:/var/log/conduit
+    depends_on:
+      conduit-dragonfly:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9091/metrics"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  conduit-api:
+    image: {{ conduit_api_image }}:{{ conduit_version }}
+    container_name: conduit-api
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      CONDUIT_CONFIG: /etc/conduit/conduit.toml
+      RUST_LOG: "{{ conduit_log_level }}"
+    ports:
+      - "{{ conduit_api_port }}:8443"
+    volumes:
+      - ./config/conduit.toml:/etc/conduit/conduit.toml:ro
+    depends_on:
+      conduit-dragonfly:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8443/api/v1/ca/cert"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # Vector sidecar — tails conduit logs and ships to the local aggregator
+  conduit-vector:
+    image: timberio/vector:latest-alpine
+    container_name: conduit-vector
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      VECTOR_DATA_DIR: /var/lib/vector
+    volumes:
+      - ./config/vector-conduit.toml:/etc/vector/vector.toml:ro
+      - conduit-logs:/var/log/conduit:ro
+      - conduit-vector-data:/var/lib/vector
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: ["--config", "/etc/vector/vector.toml"]
+    depends_on:
+      - conduit-proxy
+    restart: unless-stopped
+
+volumes:
+  conduit-dragonfly-data:
+  conduit-logs:
+  conduit-vector-data:

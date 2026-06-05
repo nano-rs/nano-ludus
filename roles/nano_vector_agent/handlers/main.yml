@@ -1,0 +1,5 @@
+---
+- name: restart vector agent
+  ansible.windows.win_service:
+    name: vector
+    state: restarted

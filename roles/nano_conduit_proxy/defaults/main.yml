@@ -1,0 +1,42 @@
+---
+# Conduit MITM Proxy Configuration
+
+# ---- Docker images ----
+# GHCR (public, no auth needed)
+conduit_proxy_image: "ghcr.io/the2dl/conduit-proxy"
+conduit_api_image: "ghcr.io/the2dl/conduit-api"
+conduit_version: "latest"
+
+# ---- Build from source (fallback if images aren't published yet) ----
+conduit_build_from_source: false
+conduit_repo_url: "https://github.com/the2dl/conduit.git"
+conduit_repo_branch: "main"
+
+# ---- Networking ----
+conduit_proxy_port: 8888
+conduit_api_port: 8443
+conduit_metrics_port: 9091
+conduit_dragonfly_port: 6380
+
+# ---- Proxy settings ----
+conduit_tls_intercept: true
+conduit_auth_required: false  # Disable for lab simplicity
+conduit_fail_closed: false    # Lab — don't block if policy store empty
+
+# ---- CA certs ----
+# Auto-generated at runtime if not provided
+conduit_ca_cert_path: ""
+conduit_ca_key_path: ""
+
+# ---- Cache ----
+conduit_cache_enabled: true
+conduit_cache_max_size_mb: 128
+
+# ---- Logging ----
+conduit_log_level: "info"
+
+# ---- Deploy directory ----
+conduit_deploy_dir: /opt/conduit-proxy
+
+# ---- Vector aggregator (local on same box) ----
+conduit_vector_aggregator_port: 9000

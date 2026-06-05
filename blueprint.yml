@@ -1,0 +1,162 @@
+# nano SIEM Lab Blueprint for Ludus
+#
+# Topology:
+#   [Win DC01]  ─┐  event logs ──► Vector agent ──┐
+#   [Win SRV01] ─┤  HTTP traffic ──► Conduit ───┤──► [Proxy/Aggregator] ──► [SIEM] ──► ClickHouse
+#   [Win WS01]  ─┘  (MITM + CA trust)          │    (Vector + Conduit)       (Debian)
+#                                                └──► (Debian .10.11)
+#
+# VLAN 10: 10.x.10.0/24 (where x = your Ludus range's second octet)
+#
+# Usage:
+#   1. ludus range config set -f blueprint.yml
+#   2. ludus range deploy
+#
+# Before deploying:
+#   - Build required templates: debian-12, win2022-server, win11-22h2-enterprise
+#   - Add roles: ludus ansible role add -d roles/nano_stack
+#                ludus ansible role add -d roles/nano_vector_aggregator
+#                ludus ansible role add -d roles/nano_vector_agent
+#                ludus ansible role add -d roles/nano_sysmon
+#                ludus ansible role add -d roles/nano_conduit_proxy
+#                ludus ansible role add geerlingguy.docker
+#
+# The SIEM box pulls the public open-core images from ghcr.io/nano-rs (no auth).
+
+ludus:
+  # =========================================================================
+  # SIEM Box - Full NanoSIEM stack (API, Search, ClickHouse, Postgres, Vector)
+  # =========================================================================
+  - vm_name: "{{ range_id }}-nanosiem"
+    hostname: "{{ range_id }}-SIEM"
+    template: debian-12-x64-server-template
+    vlan: 10
+    ip_last_octet: 10
+    ram_gb: 16
+    cpus: 8
+    linux: true
+    roles:
+      - geerlingguy.docker
+      - nano_stack
+    role_vars:
+      docker_users:
+        - localuser
+      # Images default to ghcr.io/nano-rs/nano-*:latest (public, no auth).
+      # Pin a release by uncommenting:
+      # nanosiem_version: "v0.1.598"
+      #
+      # --- Lab defaults (change for production) ---
+      nanosiem_dev_mode: "true"
+      nanosiem_vector_auth_token: "nanosiem-lab-token"
+      nanosiem_grafana_password: "nanosiem"
+      # --- Cloudflare AI Gateway (routes all meloD agent requests) ---
+      # Set these in your Ludus range config role_vars (secrets, not committed)
+      # nanosiem_cf_ai_gateway_url: "https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway_name>"
+      # nanosiem_cf_aig_auth_token: "<your-cf-auth-token>"
+
+  # =========================================================================
+  # Proxy / Aggregator - Vector aggregator + general proxy services
+  # =========================================================================
+  - vm_name: "{{ range_id }}-proxy"
+    hostname: "{{ range_id }}-PROXY"
+    template: debian-12-x64-server-template
+    vlan: 10
+    ip_last_octet: 11
+    ram_gb: 8
+    cpus: 4
+    linux: true
+    roles:
+      - geerlingguy.docker
+      - nano_vector_aggregator
+      - nano_conduit_proxy
+    role_vars:
+      docker_users:
+        - localuser
+      # Points to the SIEM box above (last octet 10)
+      nanosiem_siem_ip: "10.{{ range_second_octet }}.10.10"
+      nanosiem_siem_vector_port: 6000
+      nanosiem_vector_auth_token: "nanosiem-lab-token"
+      # Conduit proxy — pulls from ghcr.io/the2dl/conduit-{proxy,api}:latest
+
+  # =========================================================================
+  # Domain Controller - Primary DC for lab.local
+  # =========================================================================
+  - vm_name: "{{ range_id }}-dc01"
+    hostname: "{{ range_id }}-DC01"
+    template: win2022-server-x64-template
+    vlan: 10
+    ip_last_octet: 20
+    ram_gb: 8
+    cpus: 4
+    windows:
+      sysprep: true
+    domain:
+      fqdn: lab.local
+      role: primary-dc
+    roles:
+      - nano_sysmon
+      - nano_vector_agent
+    role_vars:
+      # Points to the aggregator/proxy box (last octet 11)
+      vector_aggregator_ip: "10.{{ range_second_octet }}.10.11"
+      vector_aggregator_port: 9000
+      vector_eventlog_channels:
+        - "Application"
+        - "System"
+        - "Security"
+        - "Microsoft-Windows-Sysmon/Operational"
+        - "Microsoft-Windows-PowerShell/Operational"
+        - "Microsoft-Windows-Windows Defender/Operational"
+        - "Directory Service"
+        - "DNS Server"
+      # Conduit MITM proxy
+      conduit_proxy_enabled: true
+      conduit_proxy_ip: "10.{{ range_second_octet }}.10.11"
+
+  # =========================================================================
+  # Member Server - General purpose Windows Server
+  # =========================================================================
+  - vm_name: "{{ range_id }}-srv01"
+    hostname: "{{ range_id }}-SRV01"
+    template: win2022-server-x64-template
+    vlan: 10
+    ip_last_octet: 21
+    ram_gb: 4
+    cpus: 2
+    windows:
+      sysprep: true
+    domain:
+      fqdn: lab.local
+      role: member
+    roles:
+      - nano_sysmon
+      - nano_vector_agent
+    role_vars:
+      vector_aggregator_ip: "10.{{ range_second_octet }}.10.11"
+      vector_aggregator_port: 9000
+      conduit_proxy_enabled: true
+      conduit_proxy_ip: "10.{{ range_second_octet }}.10.11"
+
+  # =========================================================================
+  # Windows Workstation - End-user machine
+  # =========================================================================
+  - vm_name: "{{ range_id }}-ws01"
+    hostname: "{{ range_id }}-WS01"
+    template: win11-22h2-x64-enterprise-template
+    vlan: 10
+    ip_last_octet: 30
+    ram_gb: 4
+    cpus: 2
+    windows:
+      sysprep: true
+    domain:
+      fqdn: lab.local
+      role: member
+    roles:
+      - nano_sysmon
+      - nano_vector_agent
+    role_vars:
+      vector_aggregator_ip: "10.{{ range_second_octet }}.10.11"
+      vector_aggregator_port: 9000
+      conduit_proxy_enabled: true
+      conduit_proxy_ip: "10.{{ range_second_octet }}.10.11"

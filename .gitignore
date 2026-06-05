@@ -1,0 +1,9 @@
+# Ansible
+*.retry
+.vault_pass
+# Local secret material (should never be committed)
+**/files/gcr-key.json
+**/files/*-key.json
+# OS / editor
+.DS_Store
+*.swp

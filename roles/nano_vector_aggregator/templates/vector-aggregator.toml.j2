@@ -1,0 +1,64 @@
+# Vector Aggregator Configuration (Ludus Lab)
+# Receives logs from Windows Vector agents via Vector protocol
+# Enriches and forwards to SIEM Vector instance
+
+data_dir = "/var/lib/vector"
+
+[api]
+enabled = true
+address = "0.0.0.0:8686"
+
+# =============================================================================
+# Source: Vector protocol (receives from Windows agents)
+# =============================================================================
+[sources.agents]
+type = "vector"
+address = "0.0.0.0:{{ aggregator_vector_port }}"
+acknowledgements.enabled = true
+
+# =============================================================================
+# Transform: Enrich Windows events with source_type
+# =============================================================================
+{% if aggregator_enrich_windows_events %}
+[transforms.enrich]
+type = "remap"
+inputs = ["agents"]
+source = '''
+# Tag events coming through the aggregator
+.aggregator_host = "{{ ansible_hostname }}"
+.aggregator_timestamp = now()
+'''
+{% endif %}
+
+# =============================================================================
+# Sink: Forward to SIEM Vector instance (Vector-to-Vector protocol)
+# =============================================================================
+[sinks.siem]
+type = "vector"
+{% if aggregator_enrich_windows_events %}
+inputs = ["enrich"]
+{% else %}
+inputs = ["agents"]
+{% endif %}
+address = "{{ nanosiem_siem_ip }}:{{ nanosiem_siem_vector_port }}"
+acknowledgements.enabled = true
+
+# Disk buffer for reliability - survives aggregator restarts
+[sinks.siem.buffer]
+type = "disk"
+max_size = {{ aggregator_buffer_max_bytes }}
+when_full = "block"
+
+# =============================================================================
+# Metrics
+# =============================================================================
+[sources.internal_metrics]
+type = "internal_metrics"
+scrape_interval_secs = 10
+namespace = "nanosiem_aggregator"
+
+[sinks.prometheus_metrics]
+type = "prometheus_exporter"
+inputs = ["internal_metrics"]
+address = "0.0.0.0:9598"
+default_namespace = "nanosiem"

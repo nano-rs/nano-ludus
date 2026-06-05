@@ -1,0 +1,5 @@
+---
+- name: restart conduit
+  ansible.builtin.shell: |
+    cd {{ conduit_deploy_dir }} && docker compose up -d --force-recreate
+  changed_when: true

@@ -1,0 +1,19 @@
+---
+galaxy_info:
+  author: NanoSIEM
+  description: Vector aggregator - receives logs from Windows agents, forwards to SIEM
+  license: proprietary
+  min_ansible_version: "2.10"
+  platforms:
+    - name: Debian
+      versions:
+        - bullseye
+        - bookworm
+  galaxy_tags:
+    - siem
+    - vector
+    - aggregator
+    - logging
+
+dependencies:
+  - role: geerlingguy.docker

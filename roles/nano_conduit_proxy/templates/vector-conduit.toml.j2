@@ -1,0 +1,54 @@
+# Vector sidecar for Conduit proxy logs
+# Collects access logs and ships to the local Vector aggregator
+
+data_dir = "/var/lib/vector"
+
+# =============================================================================
+# Source: Conduit proxy container logs (Docker log driver)
+# =============================================================================
+[sources.conduit_logs]
+type = "docker_logs"
+include_containers = ["conduit-proxy"]
+
+# =============================================================================
+# Transform: Parse and enrich conduit access logs
+# =============================================================================
+[transforms.parse_conduit]
+type = "remap"
+inputs = ["conduit_logs"]
+source = '''
+.source_type = "conduit_proxy"
+.src_host = "{{ ansible_hostname }}"
+
+# Try to parse structured JSON logs from conduit
+raw = to_string(.message) ?? ""
+parsed, err = parse_json(raw)
+if err == null {
+    # Merge parsed fields
+    parsed_keys, key_err = keys(parsed)
+    if key_err == null {
+        for_each(parsed_keys) -> |_idx, key| {
+            if key != "message" {
+                val, get_err = get(parsed, [key])
+                if get_err == null && val != null {
+                    . = set!(., [key], val)
+                }
+            }
+        }
+    }
+}
+'''
+
+# =============================================================================
+# Sink: Forward to local Vector aggregator (same host)
+# =============================================================================
+[sinks.aggregator]
+type = "vector"
+inputs = ["parse_conduit"]
+address = "172.17.0.1:{{ conduit_vector_aggregator_port }}"
+acknowledgements.enabled = true
+
+[sinks.aggregator.buffer]
+type = "disk"
+max_size = 536870912  # 512MB
+when_full = "block"

@@ -1,0 +1,18 @@
+---
+galaxy_info:
+  author: NanoSIEM
+  description: Vector agent for Windows - collects Event Logs and ships to aggregator
+  license: proprietary
+  min_ansible_version: "2.10"
+  platforms:
+    - name: Windows
+      versions:
+        - all
+  galaxy_tags:
+    - siem
+    - vector
+    - windows
+    - logging
+    - eventlog
+
+dependencies: []

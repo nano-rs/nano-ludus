@@ -1,0 +1,23 @@
+---
+galaxy_info:
+  author: NanoSIEM
+  description: Deploy the full NanoSIEM stack via Docker Compose
+  license: proprietary
+  min_ansible_version: "2.10"
+  platforms:
+    - name: Debian
+      versions:
+        - bullseye
+        - bookworm
+    - name: Ubuntu
+      versions:
+        - focal
+        - jammy
+  galaxy_tags:
+    - siem
+    - security
+    - monitoring
+    - docker
+
+dependencies:
+  - role: geerlingguy.docker

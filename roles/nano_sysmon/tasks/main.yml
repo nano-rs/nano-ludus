@@ -1,0 +1,69 @@
+---
+# Workaround (NAN-1223): on stock Ludus Server-2022 templates, freshly-compiled
+# executables written to %LOCALAPPDATA%\Temp are silently stripped, which breaks
+# Ansible's Add-CSharpType (every Windows module compiles C# to temp) — so
+# `Gathering Facts` of the NEXT play (vector_agent) fails after Sysmon installs.
+# C:\Windows\Temp is exempt, so point localuser's TEMP there. Runs via the `raw`
+# module (no C# compile, so it works even where normal modules are broken) and
+# FIRST, before Sysmon goes in. The vector_agent play opens a fresh connection
+# and inherits the new TEMP. Harmless on unaffected templates (e.g. Win11).
+- name: Redirect localuser TEMP off %LOCALAPPDATA%\Temp (Server-2022 C# compile workaround)
+  ansible.builtin.raw: |
+    $ErrorActionPreference = 'Stop'
+    $sid = (New-Object System.Security.Principal.NTAccount("localuser")).Translate([System.Security.Principal.SecurityIdentifier]).Value
+    $loaded = Test-Path "Registry::HKEY_USERS\$sid"
+    if (-not $loaded) { reg load "HKU\$sid" "C:\Users\localuser\NTUSER.DAT" | Out-Null }
+    New-ItemProperty -Path "Registry::HKEY_USERS\$sid\Environment" -Name TEMP -Value "C:\Windows\Temp" -PropertyType ExpandString -Force | Out-Null
+    New-ItemProperty -Path "Registry::HKEY_USERS\$sid\Environment" -Name TMP  -Value "C:\Windows\Temp" -PropertyType ExpandString -Force | Out-Null
+    if (-not $loaded) { [gc]::Collect(); Start-Sleep -Seconds 1; reg unload "HKU\$sid" | Out-Null }
+  changed_when: false
+
+- name: Create Sysmon install directory
+  ansible.windows.win_file:
+    path: "{{ sysmon_install_dir }}"
+    state: directory
+
+- name: Download Sysmon zip
+  ansible.windows.win_get_url:
+    url: "{{ sysmon_download_url }}"
+    dest: "{{ sysmon_install_dir }}\\Sysmon.zip"
+    force: false
+
+- name: Extract Sysmon zip
+  community.windows.win_unzip:
+    src: "{{ sysmon_install_dir }}\\Sysmon.zip"
+    dest: "{{ sysmon_install_dir }}"
+    creates: "{{ sysmon_install_dir }}\\{{ sysmon_exe }}"
+
+- name: Copy Sysmon config
+  ansible.windows.win_copy:
+    src: sysmonconfig.xml
+    dest: "{{ sysmon_install_dir }}\\sysmonconfig.xml"
+
+- name: Check if Sysmon service exists
+  ansible.windows.win_command:
+    cmd: 'sc query Sysmon64'
+  register: sysmon_service
+  failed_when: false
+  changed_when: false
+
+- name: Install Sysmon (first time)
+  ansible.windows.win_command:
+    cmd: '"{{ sysmon_install_dir }}\{{ sysmon_exe }}" -accepteula -i "{{ sysmon_install_dir }}\sysmonconfig.xml"'
+  when: sysmon_service.rc != 0
+  register: sysmon_install
+  failed_when: sysmon_install.rc != 0
+
+- name: Update Sysmon config (if already installed)
+  ansible.windows.win_command:
+    cmd: '"{{ sysmon_install_dir }}\{{ sysmon_exe }}" -c "{{ sysmon_install_dir }}\sysmonconfig.xml"'
+  when: sysmon_service.rc == 0
+  register: sysmon_update
+  changed_when: true
+
+- name: Print Sysmon status
+  ansible.builtin.debug:
+    msg: |
+      Sysmon installed with -i flag (auto-starts service).
+      Config: {{ sysmon_install_dir }}\sysmonconfig.xml
+      Channel: Microsoft-Windows-Sysmon/Operational

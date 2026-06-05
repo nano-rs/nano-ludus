@@ -1,0 +1,33 @@
+version: '3.8'
+
+# Vector Aggregator - Receives from Windows agents, forwards to SIEM
+# Deployed by Ludus Ansible Role
+
+services:
+  vector-aggregator:
+    image: timberio/vector:latest-alpine
+    container_name: vector-aggregator
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      VECTOR_DATA_DIR: /var/lib/vector
+    ports:
+      # Vector protocol - agents connect here
+      - "{{ aggregator_vector_port }}:{{ aggregator_vector_port }}"
+      # Prometheus metrics
+      - "9598:9598"
+      # Vector API
+      - "8686:8686"
+    volumes:
+      - ./config/vector.toml:/etc/vector/vector.toml:ro
+      - vector-aggregator-data:/var/lib/vector
+    command: ["--config", "/etc/vector/vector.toml"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9598/metrics"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  vector-aggregator-data:

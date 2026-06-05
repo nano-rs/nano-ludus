@@ -1,0 +1,65 @@
+---
+# nano SIEM Stack configuration.
+# Override these in your Ludus range config role_vars.
+
+# ---- Container images ----
+# The lab pulls the public open-core images from GitHub Container Registry.
+# No auth needed — ghcr.io/nano-rs/nano-* are public.
+nanosiem_registry: "ghcr.io/nano-rs"
+nanosiem_version: "latest"
+
+# ---- Deploy directory ----
+nanosiem_deploy_dir: /opt/nanosiem
+
+# ---- Secrets ----
+# Left empty by default → generated ON THE SIEM BOX on first run and persisted
+# to {{ nanosiem_deploy_dir }}/.secrets so they stay STABLE across re-deploys
+# (see tasks/main.yml). Rotating these would orphan secret-at-rest data
+# (NANOSIEM_ENCRYPTION_KEY) and log everyone out (JWT_SECRET). Set explicit
+# values here to override generation. (Generated on the target, not the control
+# node, because the Ludus controller's $HOME is read-only.)
+nanosiem_jwt_secret: ""
+# 32-byte hex key for secret-at-rest encryption (api requires a real key).
+nanosiem_encryption_key: ""
+# Plain-HTTP lab → dev mode so refresh-token cookies work without HTTPS.
+nanosiem_dev_mode: "true"
+
+# ---- Database credentials ----
+nanosiem_postgres_user: nanosiem
+nanosiem_postgres_password: nanosiem
+nanosiem_postgres_db: nanosiem
+
+nanosiem_clickhouse_password: nanosiem
+nanosiem_clickhouse_admin_password: nanosiem_admin_secret
+
+# ---- Networking ----
+# IP address of this SIEM box (auto-detected, override if needed).
+nanosiem_siem_ip: "{{ ansible_default_ipv4.address }}"
+# Public URL analysts hit — the nginx reverse proxy. Drives CORS + cookie scope.
+nanosiem_base_url: "http://{{ nanosiem_siem_ip }}{{ ':' ~ nanosiem_http_port if nanosiem_http_port | int != 80 else '' }}"
+
+# Host port the nginx reverse proxy publishes (the whole UI + API live here).
+nanosiem_http_port: 80
+# Vector ingestion ports published on the host.
+nanosiem_vector_http_port: 8080
+nanosiem_vector_hec_port: 8088
+
+# Grafana admin password.
+nanosiem_grafana_password: nanosiem
+
+# Vector ingestion auth token (clients send `Authorization: Bearer <token>`).
+nanosiem_vector_auth_token: nanosiem-lab-token
+
+# ---- Retention / tier ----
+nanosiem_hot_retention_days: 90
+nanosiem_warm_retention_days: 30
+nanosiem_tier: unrestricted
+
+# ---- AI Gateway ----
+# Cloudflare AI Gateway for meloD (optional — set in role_vars).
+nanosiem_cf_ai_gateway_url: ""
+nanosiem_cf_aig_auth_token: ""
+
+# ---- Monitoring ----
+# Set to true to include Prometheus + Grafana + exporters.
+nanosiem_include_monitoring: true

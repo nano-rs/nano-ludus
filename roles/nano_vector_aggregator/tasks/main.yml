@@ -1,0 +1,101 @@
+---
+- name: Validate SIEM IP is set
+  ansible.builtin.assert:
+    that:
+      - nanosiem_siem_ip | length > 0
+    fail_msg: "nanosiem_siem_ip must be set in role_vars"
+
+- name: Install required packages
+  ansible.builtin.apt:
+    name:
+      - docker-compose-plugin
+      - curl
+    state: present
+    update_cache: true
+
+- name: Create deploy directory
+  ansible.builtin.file:
+    path: "{{ aggregator_deploy_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Create config directory
+  ansible.builtin.file:
+    path: "{{ aggregator_deploy_dir }}/config"
+    state: directory
+    mode: "0755"
+
+- name: Template Vector aggregator config
+  ansible.builtin.template:
+    src: vector-aggregator.toml.j2
+    dest: "{{ aggregator_deploy_dir }}/config/vector.toml"
+    mode: "0644"
+  notify: restart vector-aggregator
+
+- name: Template docker-compose for aggregator
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ aggregator_deploy_dir }}/docker-compose.yml"
+    mode: "0644"
+  notify: restart vector-aggregator
+
+# ---- Firewall ----
+- name: Allow Vector agent connections
+  ansible.builtin.iptables:
+    chain: INPUT
+    protocol: tcp
+    destination_port: "{{ aggregator_vector_port }}"
+    jump: ACCEPT
+    comment: "Vector aggregator - agent intake"
+
+- name: Allow Vector metrics
+  ansible.builtin.iptables:
+    chain: INPUT
+    protocol: tcp
+    destination_port: "9598"
+    jump: ACCEPT
+    comment: "Vector aggregator - Prometheus metrics"
+
+# ---- Start ----
+- name: Pull latest container images
+  ansible.builtin.shell: |
+    cd {{ aggregator_deploy_dir }} && docker compose pull
+  # Serialize the pull so it doesn't overwhelm the lab DNS forwarder (NAN-1230).
+  environment:
+    COMPOSE_PARALLEL_LIMIT: "1"
+  register: aggregator_pull
+  changed_when: true
+  # Retry transient lab-DNS timeouts mid-pull (NAN-1224).
+  retries: 5
+  delay: 15
+  until: aggregator_pull.rc == 0
+
+- name: Start Vector aggregator
+  ansible.builtin.shell: |
+    cd {{ aggregator_deploy_dir }} && docker compose up -d
+  changed_when: true
+
+- name: Wait for Vector aggregator to be healthy
+  ansible.builtin.uri:
+    url: "http://localhost:9598/metrics"
+    method: GET
+    status_code: 200
+  register: health_check
+  retries: 15
+  delay: 3
+  until: health_check.status == 200
+
+- name: Print aggregator info
+  ansible.builtin.debug:
+    msg: |
+      ============================================
+      Vector Aggregator is running!
+      ============================================
+      Agent intake:  {{ ansible_default_ipv4.address }}:{{ aggregator_vector_port }} (Vector protocol)
+      Metrics:       http://{{ ansible_default_ipv4.address }}:9598/metrics
+      Forwarding to: {{ nanosiem_siem_ip }}:{{ nanosiem_siem_vector_port }} (SIEM Vector)
+      ============================================
+
+      Configure Windows Vector agents to point their vector sink at:
+        address = "{{ ansible_default_ipv4.address }}:{{ aggregator_vector_port }}"
+      ============================================

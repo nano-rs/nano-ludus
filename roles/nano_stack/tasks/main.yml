@@ -1,0 +1,207 @@
+---
+- name: Install required packages
+  ansible.builtin.apt:
+    name:
+      - docker-compose-plugin
+      - curl
+    state: present
+    update_cache: true
+
+- name: Create deploy directory
+  ansible.builtin.file:
+    path: "{{ nanosiem_deploy_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Create config subdirectories
+  ansible.builtin.file:
+    path: "{{ nanosiem_deploy_dir }}/{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - config/vector
+    # Mountpoint for the nano-vector-dynamic volume. Must exist on the host: the
+    # vector container binds config/vector at /etc/vector READ-ONLY, so Docker
+    # can't create /etc/vector/dynamic itself (NAN-1218). The api delivers parser
+    # configs into this volume; vector reads them from /etc/vector/dynamic.
+    - config/vector/dynamic
+    - config/nginx
+    - config/prometheus/rules
+    - config/grafana/provisioning/datasources
+    - config/grafana/provisioning/dashboards
+    - config/grafana/dashboards
+    - clickhouse/config.d
+    - clickhouse/users.d
+
+# ---- Static config bundles (vendored from the validated open-core compose) ----
+- name: Copy ClickHouse config.d
+  ansible.builtin.copy:
+    src: clickhouse/config.d/
+    dest: "{{ nanosiem_deploy_dir }}/clickhouse/config.d/"
+    mode: "0644"
+  notify: restart nanosiem
+
+- name: Copy ClickHouse users.d
+  ansible.builtin.copy:
+    src: clickhouse/users.d/
+    dest: "{{ nanosiem_deploy_dir }}/clickhouse/users.d/"
+    mode: "0644"
+  notify: restart nanosiem
+
+- name: Copy Vector static config bundle
+  ansible.builtin.copy:
+    src: vector/
+    dest: "{{ nanosiem_deploy_dir }}/config/vector/"
+    mode: "0644"
+  notify: restart nanosiem
+
+- name: Copy nginx reverse-proxy config
+  ansible.builtin.copy:
+    src: nginx/nginx.conf
+    dest: "{{ nanosiem_deploy_dir }}/config/nginx/nginx.conf"
+    mode: "0644"
+  notify: restart nanosiem
+
+# ---- Templated config ----
+- name: Template docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ nanosiem_deploy_dir }}/docker-compose.yml"
+    mode: "0644"
+  notify: restart nanosiem
+
+# ---- Secrets (generated on the target, persisted across re-deploys) ----
+# The control node's $HOME is read-only on Ludus, so secrets can't live there.
+# Generate them on the SIEM box and keep them in {{ deploy }}/.secrets so a
+# re-deploy reuses the same JWT/encryption key (rotating them would orphan
+# secret-at-rest data and log everyone out). Skipped if values are pinned in
+# role_vars.
+- name: Create secrets directory
+  ansible.builtin.file:
+    path: "{{ nanosiem_deploy_dir }}/.secrets"
+    state: directory
+    mode: "0700"
+  when: nanosiem_jwt_secret | length == 0 or nanosiem_encryption_key | length == 0
+
+- name: Generate persistent secrets on first run
+  ansible.builtin.shell: "umask 077 && openssl rand -hex 32 > {{ nanosiem_deploy_dir }}/.secrets/{{ item }}"
+  args:
+    creates: "{{ nanosiem_deploy_dir }}/.secrets/{{ item }}"
+  loop:
+    - jwt_secret
+    - encryption_key
+  when: nanosiem_jwt_secret | length == 0 or nanosiem_encryption_key | length == 0
+
+- name: Read generated JWT secret
+  ansible.builtin.slurp:
+    src: "{{ nanosiem_deploy_dir }}/.secrets/jwt_secret"
+  register: nanosiem_jwt_secret_file
+  when: nanosiem_jwt_secret | length == 0
+
+- name: Read generated encryption key
+  ansible.builtin.slurp:
+    src: "{{ nanosiem_deploy_dir }}/.secrets/encryption_key"
+  register: nanosiem_encryption_key_file
+  when: nanosiem_encryption_key | length == 0
+
+- name: Adopt generated secrets
+  ansible.builtin.set_fact:
+    nanosiem_jwt_secret: "{{ (nanosiem_jwt_secret_file.content | b64decode | trim) if nanosiem_jwt_secret | length == 0 else nanosiem_jwt_secret }}"
+    nanosiem_encryption_key: "{{ (nanosiem_encryption_key_file.content | b64decode | trim) if nanosiem_encryption_key | length == 0 else nanosiem_encryption_key }}"
+
+- name: Template .env file
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ nanosiem_deploy_dir }}/.env"
+    mode: "0600"
+  notify: restart nanosiem
+
+- name: Template Prometheus config
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: "{{ nanosiem_deploy_dir }}/config/prometheus/prometheus.yml"
+    mode: "0644"
+  when: nanosiem_include_monitoring
+  notify: restart nanosiem
+
+- name: Template Grafana datasource provisioning
+  ansible.builtin.template:
+    src: grafana-datasources.yml.j2
+    dest: "{{ nanosiem_deploy_dir }}/config/grafana/provisioning/datasources/datasources.yml"
+    mode: "0644"
+  when: nanosiem_include_monitoring
+  notify: restart nanosiem
+
+# ---- Firewall ----
+- name: Allow nano SIEM ports through the firewall
+  ansible.builtin.iptables:
+    chain: INPUT
+    protocol: "{{ item.proto | default('tcp') }}"
+    destination_port: "{{ item.port }}"
+    jump: ACCEPT
+    comment: "nano SIEM {{ item.name }}"
+  loop:
+    - { port: "{{ nanosiem_http_port }}", name: "Web/API (nginx)" }
+    - { port: "{{ nanosiem_vector_http_port }}", name: "Vector HTTP ingest" }
+    - { port: "6000", name: "Vector native protocol" }
+    - { port: "{{ nanosiem_vector_hec_port }}", name: "Splunk HEC" }
+    - { port: "4317", name: "OTel gRPC" }
+    - { port: "4318", name: "OTel HTTP" }
+    - { port: "24224", name: "Fluent Forward" }
+    - { port: "8686", name: "Vector API" }
+    - { port: "3001", name: "Grafana" }
+    - { port: "9090", name: "Prometheus" }
+
+# ---- Start the stack ----
+- name: Pull container images
+  ansible.builtin.command:
+    cmd: docker compose pull
+    chdir: "{{ nanosiem_deploy_dir }}"
+  # Pull images one at a time. The lab DNS forwarder resolves fine at idle but a
+  # fully-parallel pull (13 images x 3 layers) fires ~40 simultaneous CDN lookups
+  # and overwhelms it; serializing keeps it to a few at a time (NAN-1230).
+  environment:
+    COMPOSE_PARALLEL_LIMIT: "1"
+  register: nanosiem_pull
+  changed_when: true
+  # Retry if the resolver still hiccups mid-pull (NAN-1224).
+  retries: 5
+  delay: 15
+  until: nanosiem_pull.rc == 0
+
+- name: Start nano SIEM stack
+  ansible.builtin.command:
+    cmd: docker compose up -d --remove-orphans
+    chdir: "{{ nanosiem_deploy_dir }}"
+  changed_when: true
+
+- name: Wait for API to be healthy (through nginx — first run includes DB migrations)
+  ansible.builtin.uri:
+    url: "http://localhost:{{ nanosiem_http_port }}/api/health"
+    method: GET
+    status_code: 200
+  register: health_check
+  retries: 60
+  delay: 5
+  until: health_check.status == 200
+
+- name: Print access info
+  ansible.builtin.debug:
+    msg: |
+      ============================================
+      nano SIEM is running!
+      ============================================
+      Web UI / API:  {{ nanosiem_base_url }}  (first visit redirects to /setup)
+
+      Log ingestion (Authorization: Bearer {{ nanosiem_vector_auth_token }}):
+        HTTP:    {{ nanosiem_base_url }}/ingest  (or  http://{{ nanosiem_siem_ip }}:{{ nanosiem_vector_http_port }})
+        HEC:     http://{{ nanosiem_siem_ip }}:{{ nanosiem_vector_hec_port }}
+        Vector:  {{ nanosiem_siem_ip }}:6000  (Vector native protocol — aggregators forward here)
+      ============================================
+
+- name: Print monitoring access info
+  ansible.builtin.debug:
+    msg: |
+      Grafana:     http://{{ nanosiem_siem_ip }}:3001 (admin/{{ nanosiem_grafana_password }})
+      Prometheus:  http://{{ nanosiem_siem_ip }}:9090
+  when: nanosiem_include_monitoring

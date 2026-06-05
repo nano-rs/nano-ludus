@@ -1,0 +1,18 @@
+---
+galaxy_info:
+  author: NanoSIEM
+  description: Conduit MITM proxy - intercepts TLS traffic and logs to Vector aggregator
+  license: proprietary
+  min_ansible_version: "2.10"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+  galaxy_tags:
+    - proxy
+    - mitm
+    - security
+    - siem
+
+dependencies:
+  - role: geerlingguy.docker

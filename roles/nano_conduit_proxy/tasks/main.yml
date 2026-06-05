@@ -1,0 +1,133 @@
+---
+- name: Create deploy directory
+  ansible.builtin.file:
+    path: "{{ conduit_deploy_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Create config directory
+  ansible.builtin.file:
+    path: "{{ conduit_deploy_dir }}/config"
+    state: directory
+    mode: "0755"
+
+# ---- Build from source ----
+- name: Clone conduit repository
+  ansible.builtin.git:
+    repo: "{{ conduit_repo_url }}"
+    dest: "{{ conduit_deploy_dir }}/src"
+    version: "{{ conduit_repo_branch }}"
+    depth: 1
+  when: conduit_build_from_source
+  register: conduit_clone
+
+- name: Build conduit-proxy image
+  ansible.builtin.shell: |
+    cd {{ conduit_deploy_dir }}/src && docker build --target proxy -t conduit-proxy:{{ conduit_version }} .
+  when: conduit_build_from_source and (conduit_clone.changed | default(true))
+  changed_when: true
+
+- name: Build conduit-api image
+  ansible.builtin.shell: |
+    cd {{ conduit_deploy_dir }}/src && docker build --target api -t conduit-api:{{ conduit_version }} .
+  when: conduit_build_from_source and (conduit_clone.changed | default(true))
+  changed_when: true
+
+# ---- Template configs ----
+- name: Template conduit.toml
+  ansible.builtin.template:
+    src: conduit.toml.j2
+    dest: "{{ conduit_deploy_dir }}/config/conduit.toml"
+    mode: "0644"
+  notify: restart conduit
+
+- name: Template docker-compose
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ conduit_deploy_dir }}/docker-compose.yml"
+    mode: "0644"
+  notify: restart conduit
+
+- name: Template Vector sidecar config for conduit logs
+  ansible.builtin.template:
+    src: vector-conduit.toml.j2
+    dest: "{{ conduit_deploy_dir }}/config/vector-conduit.toml"
+    mode: "0644"
+  notify: restart conduit
+
+# ---- Firewall ----
+- name: Allow proxy and API ports
+  ansible.builtin.iptables:
+    chain: INPUT
+    protocol: tcp
+    destination_port: "{{ item.port }}"
+    jump: ACCEPT
+    comment: "Conduit {{ item.name }}"
+  loop:
+    - { port: "{{ conduit_proxy_port }}", name: "proxy" }
+    - { port: "{{ conduit_api_port }}", name: "API" }
+    - { port: "{{ conduit_metrics_port }}", name: "metrics" }
+
+# ---- Start ----
+- name: Pull latest container images
+  ansible.builtin.shell: |
+    cd {{ conduit_deploy_dir }} && docker compose pull
+  # Serialize the pull so it doesn't overwhelm the lab DNS forwarder (NAN-1230).
+  environment:
+    COMPOSE_PARALLEL_LIMIT: "1"
+  register: conduit_pull
+  changed_when: true
+  # Retry transient lab-DNS timeouts mid-pull (NAN-1224).
+  retries: 5
+  delay: 15
+  until: conduit_pull.rc == 0
+
+- name: Start Conduit proxy stack
+  ansible.builtin.shell: |
+    cd {{ conduit_deploy_dir }} && docker compose up -d
+  changed_when: true
+
+- name: Wait for Conduit proxy to be healthy
+  ansible.builtin.uri:
+    url: "http://localhost:{{ conduit_metrics_port }}/metrics"
+    method: GET
+    status_code: 200
+  register: health_check
+  retries: 20
+  delay: 3
+  until: health_check.status == 200
+
+- name: Wait for CA cert to be available
+  ansible.builtin.uri:
+    url: "http://localhost:{{ conduit_api_port }}/api/v1/ca/cert"
+    method: GET
+    status_code: 200
+    return_content: true
+  register: ca_cert
+  retries: 10
+  delay: 3
+  until: ca_cert.status == 200
+
+- name: Save CA cert for distribution to Windows boxes
+  ansible.builtin.copy:
+    content: "{{ ca_cert.content }}"
+    dest: "{{ conduit_deploy_dir }}/conduit-ca.pem"
+    mode: "0644"
+
+- name: Print conduit info
+  ansible.builtin.debug:
+    msg: |
+      ============================================
+      Conduit MITM Proxy is running!
+      ============================================
+      Proxy:       {{ ansible_default_ipv4.address }}:{{ conduit_proxy_port }}
+      API:         http://{{ ansible_default_ipv4.address }}:{{ conduit_api_port }}
+      Metrics:     http://{{ ansible_default_ipv4.address }}:{{ conduit_metrics_port }}/metrics
+      CA Cert:     http://{{ ansible_default_ipv4.address }}:{{ conduit_api_port }}/api/v1/ca/cert
+
+      Configure Windows proxy:
+        http_proxy={{ ansible_default_ipv4.address }}:{{ conduit_proxy_port }}
+        https_proxy={{ ansible_default_ipv4.address }}:{{ conduit_proxy_port }}
+
+      Access logs are forwarded to Vector aggregator → SIEM
+      ============================================

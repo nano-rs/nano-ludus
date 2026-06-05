@@ -1,0 +1,531 @@
+# nano SIEM stack — deployed by the Ludus `nanosiem_stack` role.
+# Auto-generated, do not edit manually.
+#
+# Rebased on the upstream, validated open-core quickstart compose
+# (docker-compose.opensource.yml). Intentional Ludus divergences:
+#   - Images: registry/version are Ansible vars ({{ nanosiem_registry }} / {{ nanosiem_version }})
+#   - Secrets/BASE_URL/dev-mode come from the templated .env (env.j2)
+#   - Optional Ludus monitoring fleet (prometheus + grafana + exporters)
+#   - Optional Cloudflare AI Gateway env for meloD
+#
+# The GHCR `nano-*` images expect this exact contract: a clickhouse-migrate
+# one-shot seeds the ClickHouse schema before api/search/vector boot, nano-jobs
+# runs the schedulers, and the api delivers parser configs into the shared
+# nano-vector-dynamic volume that vector reads from /etc/vector/dynamic.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
+x-logging-verbose: &verbose-logging
+  driver: json-file
+  options:
+    max-size: "100m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:17
+    container_name: nano-postgres
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    command: ["-c", "max_connections=200", "-c", "shared_buffers=128MB"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nanosiem}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-nanosiem}
+    volumes:
+      - nano-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nanosiem}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.4
+    container_name: nano-clickhouse
+    restart: unless-stopped
+    logging: *verbose-logging
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      # Passwords are injected into users.d/*.xml via from_env (NAN-807 bug #2).
+      # Do NOT set CLICKHOUSE_DB / CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT here — the
+      # vendored users.d already handles DB + access management, and the upstream
+      # entrypoint's reactions to those env vars conflict with our :ro mounts
+      # (NAN-809 / NAN-810).
+      CLICKHOUSE_NANOSIEM_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_ADMIN_PASSWORD: ${CLICKHOUSE_ADMIN_PASSWORD}
+    volumes:
+      - nano-clickhouse-data:/var/lib/clickhouse
+      - nano-clickhouse-logs:/var/log/clickhouse-server
+      - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+      - ./clickhouse/users.d:/etc/clickhouse-server/users.d:ro
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+{% if nanosiem_include_monitoring %}
+      - "9363:9363"
+{% endif %}
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- 'http://127.0.0.1:8123/?query=SELECT+1' 2>/dev/null | grep -q 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+
+  dragonfly:
+    # GHCR mirror — the lab's DNS resolves ghcr.io reliably (same registry as the
+    # nano-* images), whereas docker.dragonflydb.io intermittently times out (NAN-1217).
+    image: ghcr.io/dragonflydb/dragonfly:latest
+    container_name: nano-dragonfly
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    command: ["--maxmemory", "512mb", "--proactor_threads", "2"]
+    ulimits:
+      memlock: -1
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  clickhouse-migrate:
+    image: {{ nanosiem_registry }}/nano-api:{{ nanosiem_version }}
+    container_name: nano-clickhouse-migrate
+    command: ["clickhouse_migrator"]
+    restart: "no"
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-nanosiem}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nanosiem}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_DATABASE: nanosiem
+      CLICKHOUSE_CLUSTER: ""
+      CLICKHOUSE_USER: nanosiem
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_ADMIN_USER: nanosiem_admin
+      CLICKHOUSE_ADMIN_PASSWORD: ${CLICKHOUSE_ADMIN_PASSWORD}
+      CLICKHOUSE_SELF_USER: nanosiem
+      POSTGRES_DICT_HOST: postgres
+      POSTGRES_DICT_PASSWORD: ${POSTGRES_PASSWORD}
+      RUST_LOG: ${RUST_LOG:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+  vector:
+    image: timberio/vector:0.52.0-debian
+    container_name: nano-vector
+    restart: unless-stopped
+    logging: *verbose-logging
+    security_opt:
+      - no-new-privileges:true
+    # Static bundle at /etc/vector (read-only). Per-source parser configs
+    # delivered by nano-api land in /etc/vector/dynamic/sources/{parsers,configs}/
+    # via the shared nano-vector-dynamic volume. The mkdir -p prefix is defensive:
+    # on first boot the named volume is empty and --config-dir on a missing path
+    # makes Vector error at startup.
+    #
+    # NAN-1219: `--config-dir` is NOT recursive in Vector 0.52 — a single
+    # `--config-dir /etc/vector` loads only the top-level static TOMLs and SILENTLY
+    # drops every event because the api-delivered router + clickhouse_logs sink under
+    # dynamic/sources/parsers never load. Each dynamic dir must be listed explicitly.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        mkdir -p /etc/vector/dynamic/sources/parsers /etc/vector/dynamic/sources/configs &&
+        exec /usr/bin/vector
+        --config-dir /etc/vector
+        --config-dir /etc/vector/dynamic/sources/parsers
+        --config-dir /etc/vector/dynamic/sources/configs
+        --watch-config
+    environment:
+      VECTOR_AUTH_TOKEN: ${VECTOR_AUTH_TOKEN}
+      VECTOR_DATA_DIR: /var/lib/vector
+      VECTOR_LOG: info
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_DATABASE: nanosiem
+      CLICKHOUSE_USER: nanosiem
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    ports:
+      # HTTP ingestion (auto-detects format from Content-Type)
+      - "{{ nanosiem_vector_http_port }}:8080"
+      # Vector -> Vector native protocol (the Ludus aggregator forwards here)
+      - "6000:6000"
+      # Splunk HEC
+      - "{{ nanosiem_vector_hec_port }}:8088"
+      # OpenTelemetry
+      - "4317:4317"
+      - "4318:4318"
+      # Fluent Forward
+      - "24224:24224"
+      # Vector API (config reload / inspection)
+      - "8686:8686"
+{% if nanosiem_include_monitoring %}
+      # Prometheus metrics
+      - "9598:9598"
+{% endif %}
+    volumes:
+      - ./config/vector:/etc/vector:ro
+      - nano-vector-dynamic:/etc/vector/dynamic
+      - nano-vector-data:/var/lib/vector
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      clickhouse-migrate:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  nano-api:
+    image: {{ nanosiem_registry }}/nano-api:{{ nanosiem_version }}
+    container_name: nano-api
+    restart: unless-stopped
+    logging: *verbose-logging
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-nanosiem}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nanosiem}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_DATABASE: nanosiem
+      CLICKHOUSE_CLUSTER: ""
+      CLICKHOUSE_USER: nanosiem
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_ADMIN_USER: nanosiem_admin
+      CLICKHOUSE_ADMIN_PASSWORD: ${CLICKHOUSE_ADMIN_PASSWORD}
+      CLICKHOUSE_SELF_USER: nanosiem
+      POSTGRES_DICT_HOST: postgres
+      POSTGRES_DICT_PASSWORD: ${POSTGRES_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      NANOSIEM_ENCRYPTION_KEY: ${NANOSIEM_ENCRYPTION_KEY}
+      CORS_ORIGINS: ${BASE_URL:-http://localhost}
+      AUTH_ENABLED: "true"
+      NANOSIEM_DEV_MODE: ${NANOSIEM_DEV_MODE:-false}
+      API_HOST: 0.0.0.0
+      API_PORT: "3000"
+      RUST_LOG: ${RUST_LOG:-info}
+      # Parser config delivery — api writes here, vector reads the same volume.
+      VECTOR_CONFIG_DIR: /app/config/vector
+      VECTOR_SOURCES_RUNTIME_PATH: /etc/vector/dynamic
+      VECTOR_CONTAINER_NAME: nano-vector
+      SKIP_VECTOR_VALIDATION: "true"
+      NANOSIEM_DATA_DIR: /app/data
+      NRT_MAX_CONCURRENT_RULES: "50"
+      NRT_JITTER_MAX_SECS: "30"
+      HOT_RETENTION_DAYS: ${HOT_RETENTION_DAYS:-90}
+      WARM_RETENTION_DAYS: ${WARM_RETENTION_DAYS:-30}
+      COLD_STORAGE_ENABLED: "false"
+      NANO_TIER: ${NANO_TIER:-unrestricted}
+      REDIS_URL: redis://dragonfly:6379
+{% if nanosiem_cf_ai_gateway_url %}
+      CLOUDFLARE_AI_GATEWAY_URL: ${CLOUDFLARE_AI_GATEWAY_URL}
+      CF_AIG_AUTH_TOKEN: ${CF_AIG_AUTH_TOKEN}
+{% endif %}
+    volumes:
+      - nano-api-data:/app/data
+      - nano-vector-dynamic:/etc/vector/dynamic
+      - nano-vector-dynamic:/app/config/vector
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      dragonfly:
+        condition: service_healthy
+      clickhouse-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  nano-jobs:
+    image: {{ nanosiem_registry }}/nano-jobs:{{ nanosiem_version }}
+    container_name: nano-jobs
+    restart: unless-stopped
+    logging: *verbose-logging
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-nanosiem}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nanosiem}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_DATABASE: nanosiem
+      CLICKHOUSE_CLUSTER: ""
+      CLICKHOUSE_USER: nanosiem
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_ADMIN_USER: nanosiem_admin
+      CLICKHOUSE_ADMIN_PASSWORD: ${CLICKHOUSE_ADMIN_PASSWORD}
+      CLICKHOUSE_SELF_USER: nanosiem
+      POSTGRES_DICT_HOST: postgres
+      POSTGRES_DICT_PASSWORD: ${POSTGRES_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      NANOSIEM_ENCRYPTION_KEY: ${NANOSIEM_ENCRYPTION_KEY}
+      NANOSIEM_DEV_MODE: ${NANOSIEM_DEV_MODE:-false}
+      JOBS_PORT: "3003"
+      LEADER_ELECTION_ENABLED: "true"
+      RUST_LOG: ${RUST_LOG:-info}
+      VECTOR_CONFIG_DIR: /app/config/vector
+      VECTOR_SOURCES_RUNTIME_PATH: /etc/vector/dynamic
+      VECTOR_CONTAINER_NAME: nano-vector
+      SKIP_VECTOR_VALIDATION: "true"
+      NANOSIEM_DATA_DIR: /app/data
+      NRT_MAX_CONCURRENT_RULES: "50"
+      NRT_JITTER_MAX_SECS: "30"
+      HOT_RETENTION_DAYS: ${HOT_RETENTION_DAYS:-90}
+      WARM_RETENTION_DAYS: ${WARM_RETENTION_DAYS:-30}
+      COLD_STORAGE_ENABLED: "false"
+      NANO_TIER: ${NANO_TIER:-unrestricted}
+      REDIS_URL: redis://dragonfly:6379
+{% if nanosiem_cf_ai_gateway_url %}
+      CLOUDFLARE_AI_GATEWAY_URL: ${CLOUDFLARE_AI_GATEWAY_URL}
+      CF_AIG_AUTH_TOKEN: ${CF_AIG_AUTH_TOKEN}
+{% endif %}
+    volumes:
+      - nano-api-data:/app/data
+      - nano-vector-dynamic:/etc/vector/dynamic
+      - nano-vector-dynamic:/app/config/vector
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      dragonfly:
+        condition: service_healthy
+      clickhouse-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3003/health 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  nano-search:
+    image: {{ nanosiem_registry }}/nano-search:{{ nanosiem_version }}
+    container_name: nano-search
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-nanosiem}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nanosiem}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_DATABASE: nanosiem
+      CLICKHOUSE_CLUSTER: ""
+      CLICKHOUSE_USER: nanosiem
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      SEARCH_PORT: "3002"
+      JWT_SECRET: ${JWT_SECRET}
+      NANOSIEM_ENCRYPTION_KEY: ${NANOSIEM_ENCRYPTION_KEY}
+      CORS_ORIGINS: ${BASE_URL:-http://localhost}
+      AUTH_ENABLED: "true"
+      NANOSIEM_DEV_MODE: ${NANOSIEM_DEV_MODE:-false}
+      REDIS_URL: redis://dragonfly:6379
+      RUST_LOG: ${RUST_LOG:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      dragonfly:
+        condition: service_healthy
+      clickhouse-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3002/health 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  nano-web:
+    image: {{ nanosiem_registry }}/nano-web:{{ nanosiem_version }}
+    container_name: nano-web
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    # No healthcheck — the image's embedded nginx only binds IPv4 on :5173, but
+    # Alpine wget resolves "localhost" to ::1 and fails. nginx depends on web
+    # with service_started.
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  nginx:
+    image: nginx:alpine
+    container_name: nano-nginx
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./config/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "{{ nanosiem_http_port }}:80"
+    depends_on:
+      nano-api:
+        condition: service_healthy
+      nano-web:
+        condition: service_started
+      vector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/api/health 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+{% if nanosiem_include_monitoring %}
+
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: nano-prometheus
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/prometheus/rules:/etc/prometheus/rules:ro
+      - nano-prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    ports:
+      - "9090:9090"
+    depends_on:
+      - clickhouse
+      - vector
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  grafana:
+    image: grafana/grafana:10.2.2
+    container_name: nano-grafana
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-nanosiem}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+    volumes:
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - nano-grafana-data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: nano-postgres-exporter
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-nanosiem}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nanosiem}?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: nano-node-exporter
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    command:
+      - '--path.rootfs=/host'
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host:ro,rslave
+    pid: host
+{% endif %}
+
+volumes:
+  nano-postgres-data:
+  nano-clickhouse-data:
+  nano-clickhouse-logs:
+  nano-vector-data:
+  nano-vector-dynamic:
+  nano-api-data:
+{% if nanosiem_include_monitoring %}
+  nano-prometheus-data:
+  nano-grafana-data:
+{% endif %}
