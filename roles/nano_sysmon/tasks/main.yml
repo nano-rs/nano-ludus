@@ -1,23 +1,10 @@
 ---
-# Workaround (NAN-1223): on stock Ludus Server-2022 templates, freshly-compiled
-# executables written to %LOCALAPPDATA%\Temp are silently stripped, which breaks
-# Ansible's Add-CSharpType (every Windows module compiles C# to temp) — so
-# `Gathering Facts` of the NEXT play (vector_agent) fails after Sysmon installs.
-# C:\Windows\Temp is exempt, so point localuser's TEMP there. Runs via the `raw`
-# module (no C# compile, so it works even where normal modules are broken) and
-# FIRST, before Sysmon goes in. The vector_agent play opens a fresh connection
-# and inherits the new TEMP. Harmless on unaffected templates (e.g. Win11).
-- name: Redirect localuser TEMP off %LOCALAPPDATA%\Temp (Server-2022 C# compile workaround)
-  ansible.builtin.raw: |
-    $ErrorActionPreference = 'Stop'
-    $sid = (New-Object System.Security.Principal.NTAccount("localuser")).Translate([System.Security.Principal.SecurityIdentifier]).Value
-    $loaded = Test-Path "Registry::HKEY_USERS\$sid"
-    if (-not $loaded) { reg load "HKU\$sid" "C:\Users\localuser\NTUSER.DAT" | Out-Null }
-    New-ItemProperty -Path "Registry::HKEY_USERS\$sid\Environment" -Name TEMP -Value "C:\Windows\Temp" -PropertyType ExpandString -Force | Out-Null
-    New-ItemProperty -Path "Registry::HKEY_USERS\$sid\Environment" -Name TMP  -Value "C:\Windows\Temp" -PropertyType ExpandString -Force | Out-Null
-    if (-not $loaded) { [gc]::Collect(); Start-Sleep -Seconds 1; reg unload "HKU\$sid" | Out-Null }
-  changed_when: false
-
+# NAN-1527: the Ansible "Add-CSharpType DLL vanished" failures on these boxes were
+# NOT a stock-template quirk — they were self-inflicted by this role's own Sysmon
+# config, whose FileBlockExecutable rule *deleted* every executable dropped under
+# \AppData\Local\Temp\ (where .NET's CodeDom compiles). Root-caused live via Sysmon
+# FileDelete (id 23) telemetry. Fix is in files/sysmonconfig.xml (block rule removed);
+# no TEMP redirect or other workaround is needed here.
 - name: Create Sysmon install directory
   ansible.windows.win_file:
     path: "{{ sysmon_install_dir }}"
@@ -28,6 +15,16 @@
     url: "{{ sysmon_download_url }}"
     dest: "{{ sysmon_install_dir }}\\Sysmon.zip"
     force: false
+    # Bypass the Conduit MITM proxy for this download (NAN-1527). On a re-deploy the
+    # proxy + its CA are already active (set by nano_vector_agent on the prior run),
+    # so even the `force: false` freshness-check connection gets MITM'd and fails the
+    # TLS trust check ("Could not establish trust relationship"). The Sysmon binary
+    # doesn't need to be proxy-visible — go direct so fresh + re-deploys behave the same.
+    use_proxy: false
+  register: sysmon_download
+  retries: 3
+  delay: 10
+  until: sysmon_download is succeeded
 
 - name: Extract Sysmon zip
   community.windows.win_unzip:
