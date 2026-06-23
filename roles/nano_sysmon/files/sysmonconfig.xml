@@ -290,16 +290,18 @@
     </RuleGroup>
 
     <!-- ================================================================
-         Event 27: FileBlockExecutable
-         BLOCKING — Prevent executable drops in user-writable dirs
-         from unsigned/suspicious parent processes
+         Event 27: FileBlockExecutable — REMOVED (NAN-1527)
+         This is an ACTIVE-PREVENTION rule: Sysmon *deletes* any executable
+         written under \AppData\Local\Temp\. With no parent/signature
+         condition it blocks ALL of them — including the DLLs that .NET's
+         CodeDom (csc.exe) compiles there for Ansible's Add-CSharpType. That
+         silently broke every Windows module run after this config loaded
+         (csc returns 0 but the .dll is gone → "Could not find file …dll").
+         A SIEM sensor should OBSERVE, not block; executable drops are still
+         fully logged via FileCreate (Event 11) and FileExecutableDetected
+         (Event 29) below. Do NOT re-add blocking here — put EPP response in
+         an EPP, not the detection config.
     ================================================================ -->
-    <RuleGroup name="FileBlockExecutable" groupRelation="or">
-      <FileBlockExecutable onmatch="include">
-        <TargetFilename condition="contains">\AppData\Local\Temp\</TargetFilename>
-        <TargetFilename condition="contains">\Content.Outlook\</TargetFilename>
-      </FileBlockExecutable>
-    </RuleGroup>
 
     <!-- ================================================================
          Event 29: FileExecutableDetected

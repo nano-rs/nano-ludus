@@ -48,11 +48,6 @@ ludus:
       # --- Lab defaults (change for production) ---
       nanosiem_dev_mode: "true"
       nanosiem_vector_auth_token: "nanosiem-lab-token"
-      nanosiem_grafana_password: "nanosiem"
-      # --- Cloudflare AI Gateway (routes all meloD agent requests) ---
-      # Set these in your Ludus range config role_vars (secrets, not committed)
-      # nanosiem_cf_ai_gateway_url: "https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway_name>"
-      # nanosiem_cf_aig_auth_token: "<your-cf-auth-token>"
 
   # =========================================================================
   # Proxy / Aggregator - Vector aggregator + general proxy services

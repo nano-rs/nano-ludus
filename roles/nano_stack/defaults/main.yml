@@ -6,7 +6,21 @@
 # The lab pulls the public open-core images from GitHub Container Registry.
 # No auth needed — ghcr.io/nano-rs/nano-* are public.
 nanosiem_registry: "ghcr.io/nano-rs"
+# Image tag for the nano-* services (written to .env as NANO_VERSION, which the
+# fetched upstream compose reads). "latest" tracks the newest release.
 nanosiem_version: "latest"
+
+# ---- Open-core config source (NAN-1267) ----
+# The compose + vector/nginx/clickhouse config are fetched from nano-rs/nano at
+# deploy time instead of vendored, so the lab inherits upstream fixes + the
+# third-party @sha256 pins in images.lock. This is the branch fetched from.
+# Pin to a release-aligned branch for a reproducible lab; defaults to main.
+nano_ref: "main"
+
+# NOTE: the SIEM stack's published ports now follow the upstream open-core
+# compose (nginx 80, vector 8080/8088/6000/4317/4318/24224 — matching the
+# defaults below). Changing the *_port vars only re-points the firewall + access
+# URLs; remapping the container-published ports would need a compose override.
 
 # ---- Deploy directory ----
 nanosiem_deploy_dir: /opt/nanosiem
@@ -44,9 +58,6 @@ nanosiem_http_port: 80
 nanosiem_vector_http_port: 8080
 nanosiem_vector_hec_port: 8088
 
-# Grafana admin password.
-nanosiem_grafana_password: nanosiem
-
 # Vector ingestion auth token (clients send `Authorization: Bearer <token>`).
 nanosiem_vector_auth_token: nanosiem-lab-token
 
@@ -55,11 +66,8 @@ nanosiem_hot_retention_days: 90
 nanosiem_warm_retention_days: 30
 nanosiem_tier: unrestricted
 
-# ---- AI Gateway ----
-# Cloudflare AI Gateway for meloD (optional — set in role_vars).
-nanosiem_cf_ai_gateway_url: ""
-nanosiem_cf_aig_auth_token: ""
-
-# ---- Monitoring ----
-# Set to true to include Prometheus + Grafana + exporters.
-nanosiem_include_monitoring: true
+# NOTE (NAN-1267): the lab deploys exactly what open-core ships. Monitoring
+# (Prometheus/Grafana) and the meloD Cloudflare-AI-Gateway env are NOT bolted on
+# here — the opensource compose doesn't include them. If those are wanted in the
+# lab, add them to open-core itself so every deployer (proxmox, ludus) inherits
+# them, rather than re-forking the compose in this role.

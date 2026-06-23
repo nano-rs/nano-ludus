@@ -4,6 +4,7 @@
     name:
       - docker-compose-plugin
       - curl
+      - ca-certificates
     state: present
     update_cache: true
 
@@ -13,62 +14,54 @@
     state: directory
     mode: "0755"
 
-- name: Create config subdirectories
+# ---- Open-core stack: fetched from nano-rs/nano (single source of truth) ----
+# NAN-1267: the lab does NOT vendor or fork the stack. It deploys exactly what
+# open-core ships — the opensource compose + its vector/nginx/clickhouse config,
+# pulled from the public repo at deploy time — so it inherits every upstream fix
+# (e.g. the vector api.playground removal, NAN-1260) and the third-party @sha256
+# pins in images.lock (NAN-1258) automatically, with nothing to maintain here.
+- name: Fetch open-core artifacts from nano-rs/nano ({{ nano_ref }})
+  ansible.builtin.shell:
+    cmd: >
+      set -o pipefail &&
+      curl -fsSL "https://github.com/nano-rs/nano/archive/refs/heads/{{ nano_ref }}.tar.gz"
+      | tar -xz -C "{{ nanosiem_deploy_dir }}" --strip-components=1
+      "nano-{{ nano_ref }}/docker-compose.opensource.yml"
+      "nano-{{ nano_ref }}/images.lock"
+      "nano-{{ nano_ref }}/config/vector"
+      "nano-{{ nano_ref }}/config/nginx/nginx.opensource.conf"
+      "nano-{{ nano_ref }}/clickhouse/config.d"
+      "nano-{{ nano_ref }}/clickhouse/users.d"
+    executable: /bin/bash
+  register: nanosiem_fetch
+  changed_when: true
+  retries: 5
+  delay: 15
+  until: nanosiem_fetch.rc == 0
+
+- name: Promote opensource compose to docker-compose.yml
+  ansible.builtin.command:
+    cmd: mv -f "{{ nanosiem_deploy_dir }}/docker-compose.opensource.yml" "{{ nanosiem_deploy_dir }}/docker-compose.yml"
+  changed_when: true
+
+# The ONLY deviation from the upstream compose: docker.dragonflydb.io intermittently
+# times out from inside the lab; the GHCR mirror is reliable (NAN-1217). Pure
+# network workaround — not a feature change.
+- name: Adapt dragonfly image to the GHCR mirror (NAN-1217)
+  ansible.builtin.replace:
+    path: "{{ nanosiem_deploy_dir }}/docker-compose.yml"
+    regexp: '^(\s*image:\s*)docker\.dragonflydb\.io/dragonflydb/dragonfly:.*$'
+    replace: '\1ghcr.io/dragonflydb/dragonfly:latest'
+  notify: restart nanosiem
+
+- name: Create vector dynamic mountpoint
   ansible.builtin.file:
-    path: "{{ nanosiem_deploy_dir }}/{{ item }}"
+    # Mountpoint for the nano-vector-dynamic volume. The vector container binds
+    # config/vector at /etc/vector READ-ONLY, so Docker can't create
+    # /etc/vector/dynamic itself (NAN-1218). The api delivers parser configs here.
+    path: "{{ nanosiem_deploy_dir }}/config/vector/dynamic"
     state: directory
     mode: "0755"
-  loop:
-    - config/vector
-    # Mountpoint for the nano-vector-dynamic volume. Must exist on the host: the
-    # vector container binds config/vector at /etc/vector READ-ONLY, so Docker
-    # can't create /etc/vector/dynamic itself (NAN-1218). The api delivers parser
-    # configs into this volume; vector reads them from /etc/vector/dynamic.
-    - config/vector/dynamic
-    - config/nginx
-    - config/prometheus/rules
-    - config/grafana/provisioning/datasources
-    - config/grafana/provisioning/dashboards
-    - config/grafana/dashboards
-    - clickhouse/config.d
-    - clickhouse/users.d
-
-# ---- Static config bundles (vendored from the validated open-core compose) ----
-- name: Copy ClickHouse config.d
-  ansible.builtin.copy:
-    src: clickhouse/config.d/
-    dest: "{{ nanosiem_deploy_dir }}/clickhouse/config.d/"
-    mode: "0644"
-  notify: restart nanosiem
-
-- name: Copy ClickHouse users.d
-  ansible.builtin.copy:
-    src: clickhouse/users.d/
-    dest: "{{ nanosiem_deploy_dir }}/clickhouse/users.d/"
-    mode: "0644"
-  notify: restart nanosiem
-
-- name: Copy Vector static config bundle
-  ansible.builtin.copy:
-    src: vector/
-    dest: "{{ nanosiem_deploy_dir }}/config/vector/"
-    mode: "0644"
-  notify: restart nanosiem
-
-- name: Copy nginx reverse-proxy config
-  ansible.builtin.copy:
-    src: nginx/nginx.conf
-    dest: "{{ nanosiem_deploy_dir }}/config/nginx/nginx.conf"
-    mode: "0644"
-  notify: restart nanosiem
-
-# ---- Templated config ----
-- name: Template docker-compose.yml
-  ansible.builtin.template:
-    src: docker-compose.yml.j2
-    dest: "{{ nanosiem_deploy_dir }}/docker-compose.yml"
-    mode: "0644"
-  notify: restart nanosiem
 
 # ---- Secrets (generated on the target, persisted across re-deploys) ----
 # The control node's $HOME is read-only on Ludus, so secrets can't live there.
@@ -116,23 +109,7 @@
     mode: "0600"
   notify: restart nanosiem
 
-- name: Template Prometheus config
-  ansible.builtin.template:
-    src: prometheus.yml.j2
-    dest: "{{ nanosiem_deploy_dir }}/config/prometheus/prometheus.yml"
-    mode: "0644"
-  when: nanosiem_include_monitoring
-  notify: restart nanosiem
-
-- name: Template Grafana datasource provisioning
-  ansible.builtin.template:
-    src: grafana-datasources.yml.j2
-    dest: "{{ nanosiem_deploy_dir }}/config/grafana/provisioning/datasources/datasources.yml"
-    mode: "0644"
-  when: nanosiem_include_monitoring
-  notify: restart nanosiem
-
-# ---- Firewall ----
+# ---- Firewall (the ports the upstream compose publishes) ----
 - name: Allow nano SIEM ports through the firewall
   ansible.builtin.iptables:
     chain: INPUT
@@ -148,9 +125,6 @@
     - { port: "4317", name: "OTel gRPC" }
     - { port: "4318", name: "OTel HTTP" }
     - { port: "24224", name: "Fluent Forward" }
-    - { port: "8686", name: "Vector API" }
-    - { port: "3001", name: "Grafana" }
-    - { port: "9090", name: "Prometheus" }
 
 # ---- Start the stack ----
 - name: Pull container images
@@ -158,8 +132,8 @@
     cmd: docker compose pull
     chdir: "{{ nanosiem_deploy_dir }}"
   # Pull images one at a time. The lab DNS forwarder resolves fine at idle but a
-  # fully-parallel pull (13 images x 3 layers) fires ~40 simultaneous CDN lookups
-  # and overwhelms it; serializing keeps it to a few at a time (NAN-1230).
+  # fully-parallel pull fires ~40 simultaneous CDN lookups and overwhelms it;
+  # serializing keeps it to a few at a time (NAN-1230).
   environment:
     COMPOSE_PARALLEL_LIMIT: "1"
   register: nanosiem_pull
@@ -168,6 +142,45 @@
   retries: 5
   delay: 15
   until: nanosiem_pull.rc == 0
+
+# Supply-chain advisory: confirm the first-party images we pulled match the
+# @sha256 digests in the fetched images.lock (NAN-1258). Non-fatal — images.lock
+# tracks the latest release, so a freshly-pushed :latest can briefly differ.
+# Third-party images are digest-pinned directly in the compose (docker enforces
+# those at pull), so only the ghcr.io/nano-rs/* tags are checked here.
+- name: Verify first-party image digests against images.lock (advisory)
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      mismatch=0
+      while read -r repo expected; do
+        [ -z "$repo" ] && continue
+        case "$repo" in
+          \#*) continue ;;
+          ghcr.io/nano-rs/*) ;;
+          *) continue ;;
+        esac
+        actual=$(docker image inspect "${repo}:{{ nanosiem_version }}" \
+          --format '{% raw %}{{range .RepoDigests}}{{println .}}{{end}}{% endraw %}' 2>/dev/null \
+          | grep -F "${repo}@" | head -1)
+        if [ "${actual##*@}" != "$expected" ]; then
+          echo "DIGEST MISMATCH ${repo}: lock=${expected} pulled=${actual##*@}"
+          mismatch=1
+        fi
+      done < "{{ nanosiem_deploy_dir }}/images.lock"
+      if [ "$mismatch" -eq 0 ]; then
+        echo "OK: first-party image digests match images.lock"
+      else
+        echo "NOTE: digest(s) differ — images.lock tracks the latest release"
+      fi
+    executable: /bin/bash
+  register: nanosiem_digest_check
+  changed_when: false
+  failed_when: false
+
+- name: Show image digest verification result
+  ansible.builtin.debug:
+    msg: "{{ nanosiem_digest_check.stdout_lines }}"
 
 - name: Start nano SIEM stack
   ansible.builtin.command:
@@ -198,10 +211,3 @@
         HEC:     http://{{ nanosiem_siem_ip }}:{{ nanosiem_vector_hec_port }}
         Vector:  {{ nanosiem_siem_ip }}:6000  (Vector native protocol — aggregators forward here)
       ============================================
-
-- name: Print monitoring access info
-  ansible.builtin.debug:
-    msg: |
-      Grafana:     http://{{ nanosiem_siem_ip }}:3001 (admin/{{ nanosiem_grafana_password }})
-      Prometheus:  http://{{ nanosiem_siem_ip }}:9090
-  when: nanosiem_include_monitoring

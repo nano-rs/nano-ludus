@@ -115,9 +115,6 @@ images, and runs first‑boot ClickHouse migrations. A clean run ends with every
 | Service | URL |
 |---|---|
 | **nano UI / API** | `http://10.<octet>.10.10` (nginx :80) |
-| Grafana | `http://10.<octet>.10.10:3001` (`admin` / `nanosiem`) |
-| Prometheus | `http://10.<octet>.10.10:9090` |
-| Vector API | `http://10.<octet>.10.10:8686` |
 
 The whole app (web, API, search, `/ingest/`) is served through nginx on **port 80** — no
 service-specific ports. On first visit you're redirected to **`/setup`** to create the
