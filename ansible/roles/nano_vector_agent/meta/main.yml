@@ -2,7 +2,7 @@
 galaxy_info:
   author: NanoSIEM
   description: Vector agent for Windows - collects Event Logs and ships to aggregator
-  license: proprietary
+  license: Apache-2.0
   min_ansible_version: "2.10"
   platforms:
     - name: Windows

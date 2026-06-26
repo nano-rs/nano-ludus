@@ -1,0 +1,7 @@
+# requirements.yml: external dependencies this blueprint pulls from outside the bundle.
+# The 5 nano_* roles are vendored under ansible/roles/ and are NOT listed here.
+
+roles:
+  # Galaxy role pinned to a specific version.
+  - name: geerlingguy.docker
+    version: 7.4.4

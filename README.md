@@ -29,12 +29,17 @@ auth, no building from source.
 
 All VMs sit on VLAN 10: `10.<second-octet>.10.0/24`.
 
+This repo is packaged as a **Ludus Source**: the lab ships as the `nanosiem` blueprint
+(`blueprints/nanosiem/`), the five nano roles are vendored under `ansible/roles/`, and the
+one external dependency (`geerlingguy.docker`) is declared in
+`blueprints/nanosiem/requirements.yml`.
+
 ---
 
 ## 1. Get Ludus first
 
-This lab is just Ansible roles + a Ludus blueprint — you need a running **Ludus** server
-to deploy it. If you don't have one yet:
+This lab is a Ludus Source (a blueprint + bundled Ansible roles) — you need a running
+**Ludus** server to deploy it. If you don't have one yet:
 
 - **Ludus docs:** <https://docs.ludus.cloud>
 - **Install guide:** <https://docs.ludus.cloud/docs/intro> → *Quick Start / Install*
@@ -55,8 +60,8 @@ ludus range list      # shows your range + its range ID (the host-name prefix)
 
 ## 2. Build the templates
 
-The blueprint uses three Ludus templates. Build them if `ludus templates list` shows
-them as `NOT BUILT`:
+The blueprint uses three stock Ludus templates. Build them if `ludus templates list`
+shows them as `NOT BUILT`:
 
 ```bash
 ludus templates list
@@ -72,34 +77,50 @@ ludus templates status     # watch progress
 
 ---
 
-## 3. Add the roles
+## 3. Add the source
+
+Register this repo as a Ludus Source. The source carries the `nanosiem` blueprint, the
+five vendored `nano_*` roles, and a `requirements.yml` that declares `geerlingguy.docker`
+— Ludus installs all of them for you.
 
 ```bash
-# Community role for Docker
-ludus ansible role add geerlingguy.docker
+# Remote git source (once this repo is pushed):
+ludus source add https://github.com/nano-rs/nano-ludus
 
-# nano lab roles (clone this repo first)
-git clone https://github.com/nano-rs/nano-ludus && cd nano-ludus
-ludus ansible role add -d roles/nano_stack
-ludus ansible role add -d roles/nano_sysmon
-ludus ansible role add -d roles/nano_vector_aggregator
-ludus ansible role add -d roles/nano_vector_agent
-ludus ansible role add -d roles/nano_conduit_proxy
-
-ludus ansible role list    # confirm all six are present
+# ...or a local dev source, from a clone of this repo:
+ludus source add -d . --id nano-rs-nano-ludus
 ```
 
-> 🔑 **The #1 gotcha:** `ludus range deploy` runs the copy of each role **cached on the
-> Ludus server**, *not* the files on your disk. After editing any role you **must**
-> re‑push it: `ludus ansible role add -d roles/<role> --force`. Forgetting this is the
+Both forms register the source under the ID **`nano-rs-nano-ludus`**, so the blueprint is
+addressed as `nano-rs-nano-ludus/nanosiem`. Confirm it landed and (optionally) pre-install
+its role/collection deps:
+
+```bash
+ludus source list                          # the source should appear
+ludus blueprint list                       # nano-rs-nano-ludus/nanosiem should appear
+ludus blueprint info nano-rs-nano-ludus/nanosiem
+ludus blueprint install nano-rs-nano-ludus/nanosiem   # optional: pull deps up front
+```
+
+> 🔑 **The #1 gotcha — re‑sync after editing a role.** `ludus range deploy` runs the copy
+> of each role held **by the Ludus server from the source snapshot**, *not* the files on
+> your disk. After editing anything under `ansible/roles/` (or the range config) you
+> **must** re‑sync the source before deploying:
+> - **local dev source:** `ludus source update nano-rs-nano-ludus -d .`
+> - **git source:** push your commit, then `ludus source sync nano-rs-nano-ludus`
+>
+> Then re‑run `ludus blueprint apply` + `ludus range deploy`. Forgetting this is the
 > single most common "but I fixed that already" trap.
 
 ---
 
 ## 4. Deploy
 
+`ludus blueprint apply` writes the blueprint's range config into your range; you do **not**
+run `ludus range config set -f` yourself.
+
 ```bash
-ludus range config set -f blueprint.yml
+ludus blueprint apply nano-rs-nano-ludus/nanosiem
 ludus range deploy
 ludus range logs -f
 ```
@@ -141,7 +162,8 @@ parsers** from the in‑app Parser Repository — open‑core ships with none de
 
 ## Customization
 
-**Event-log channels** — override `vector_eventlog_channels` per host in `blueprint.yml`:
+**Event-log channels** — override `vector_eventlog_channels` per host in
+`blueprints/nanosiem/range-config.yml`:
 
 ```yaml
 role_vars:
@@ -154,11 +176,11 @@ role_vars:
     - "Microsoft-Windows-Windows Defender/Operational"
 ```
 
-**Resource sizing** — adjust `ram_gb` / `cpus` in `blueprint.yml`. Minimums:
-SIEM 12 GB / 4 CPU (16/8 recommended) · aggregator 2 GB / 2 CPU · DC 4 GB / 2 CPU ·
+**Resource sizing** — adjust `ram_gb` / `cpus` in `blueprints/nanosiem/range-config.yml`.
+Minimums: SIEM 12 GB / 4 CPU (16/8 recommended) · aggregator 2 GB / 2 CPU · DC 4 GB / 2 CPU ·
 workstation 4 GB / 2 CPU.
 
-**Iterate on a single box** (after `--force` re‑adding the role):
+**Iterate on a single box** (after re‑syncing the source — see the #1 gotcha above):
 
 ```bash
 ludus range deploy -t user-defined-roles --limit <RANGE>-nanosiem   # just the SIEM
@@ -210,8 +232,10 @@ undefined. Fixed in recent `nano-web` images — make sure you're on `:latest`. 
 front the SIEM with **HTTPS** anyway (other browser security gates apply over plain HTTP).
 
 ### The deploy "keeps failing on the same box" after you fixed it
-You almost certainly edited a role but didn't re‑push it. `ludus range deploy` uses the
-**server‑cached** role. Run `ludus ansible role add -d roles/<role> --force`, then deploy.
+You almost certainly edited a role but didn't re‑sync the source. `ludus range deploy` uses
+the **server‑cached** role from the source snapshot. Re‑sync first — local dev:
+`ludus source update nano-rs-nano-ludus -d .`; git: push then
+`ludus source sync nano-rs-nano-ludus` — then `ludus blueprint apply` + deploy.
 
 ---
 
