@@ -1,12 +1,10 @@
 # nano SIEM — Ludus Lab
 
-Spin up a complete [nano](https://nano.rs) SIEM lab on [Ludus](https://ludus.cloud): an
-Active Directory domain, Windows endpoints with **Sysmon + Event Log** collection, a
-**Vector** aggregation pipeline, an optional **Conduit** MITM proxy, and the full nano
-open‑core stack (ClickHouse + PostgreSQL + API/search/jobs + web), all wired end‑to‑end.
-
-Everything runs from the **public open‑core images** on `ghcr.io/nano-rs` — no registry
-auth, no building from source.
+A complete [nano](https://nano.rs) SIEM lab on [Ludus](https://ludus.cloud) in three commands:
+an Active Directory domain, Windows endpoints shipping **Sysmon + Event Logs** through a
+**Vector** pipeline into the full nano open‑core stack (ClickHouse · PostgreSQL · API/search/jobs/web),
+with an optional **Conduit** MITM proxy. Runs entirely on public `ghcr.io/nano-rs` images —
+no registry auth, no building from source.
 
 ```
 ┌──────────┐ ┌──────────┐ ┌──────────┐
@@ -27,143 +25,59 @@ auth, no building from source.
           └───────────────────────────┘
 ```
 
-All VMs sit on VLAN 10: `10.<second-octet>.10.0/24`.
+## Quick start
 
-This repo is packaged as a **Ludus Source**: the lab ships as the `nanosiem` blueprint
-(`blueprints/nanosiem/`), the five nano roles are vendored under `ansible/roles/`, and the
-one external dependency (`geerlingguy.docker`) is declared in
-`blueprints/nanosiem/requirements.yml`.
-
----
-
-## 1. Get Ludus first
-
-This lab is a Ludus Source (a blueprint + bundled Ansible roles) — you need a running
-**Ludus** server to deploy it. If you don't have one yet:
-
-- **Ludus docs:** <https://docs.ludus.cloud>
-- **Install guide:** <https://docs.ludus.cloud/docs/intro> → *Quick Start / Install*
-- You'll need a Proxmox host (bare metal or nested) per Ludus's requirements, then the
-  `ludus` CLI configured against your server (`ludus --help` should work).
-
-Confirm your CLI is connected before continuing:
+You need a running **Ludus** server with the CLI connected (`ludus range list` works).
+New to Ludus? Start with the [install guide](https://docs.ludus.cloud/docs/intro).
 
 ```bash
-ludus range list      # shows your range + its range ID (the host-name prefix)
-```
-
-> **Your range ID is the prefix on every VM/host name.** In the examples below it's
-> written as `<RANGE>` — substitute your own (e.g. if `ludus range list` shows
-> `JS-nanosiem`, your `<RANGE>` is `JS`). Don't copy a literal prefix from these docs.
-
----
-
-## 2. Build the templates
-
-The blueprint uses three stock Ludus templates. Build them if `ludus templates list`
-shows them as `NOT BUILT`:
-
-```bash
-ludus templates list
+# 1. Build the templates this lab uses (skip any already BUILT; Windows ones take ~1–2 hr each)
 ludus templates build -n debian-12-x64-server-template
 ludus templates build -n win2022-server-x64-template
 ludus templates build -n win11-22h2-x64-enterprise-template
-ludus templates status     # watch progress
-```
 
-> ⚠️ **Windows templates are the long pole** (~1–2 hr each) and occasionally fail on the
-> Windows-update/sysprep step. If one errors, re‑run `ludus templates build -n <name>` —
-> a manual retry almost always succeeds. Don't deploy until all three show **built**.
-
----
-
-## 3. Add the source
-
-Register this repo as a Ludus Source. The source carries the `nanosiem` blueprint, the
-five vendored `nano_*` roles, and a `requirements.yml` that declares `geerlingguy.docker`
-— Ludus installs all of them for you.
-
-```bash
-# Remote git source (once this repo is pushed):
+# 2. Add this source, apply the blueprint, deploy
 ludus source add https://github.com/nano-rs/nano-ludus
-
-# ...or a local dev source, from a clone of this repo:
-ludus source add -d . --id nano-rs-nano-ludus
-```
-
-Both forms register the source under the ID **`nano-rs-nano-ludus`**, so the blueprint is
-addressed as `nano-rs-nano-ludus/nanosiem`. Confirm it landed and (optionally) pre-install
-its role/collection deps:
-
-```bash
-ludus source list                          # the source should appear
-ludus blueprint list                       # nano-rs-nano-ludus/nanosiem should appear
-ludus blueprint info nano-rs-nano-ludus/nanosiem
-ludus blueprint install nano-rs-nano-ludus/nanosiem   # optional: pull deps up front
-```
-
-> 🔑 **The #1 gotcha — re‑sync after editing a role.** `ludus range deploy` runs the copy
-> of each role held **by the Ludus server from the source snapshot**, *not* the files on
-> your disk. After editing anything under `ansible/roles/` (or the range config) you
-> **must** re‑sync the source before deploying:
-> - **local dev source:** `ludus source update nano-rs-nano-ludus -d .`
-> - **git source:** push your commit, then `ludus source sync nano-rs-nano-ludus`
->
-> Then re‑run `ludus blueprint apply` + `ludus range deploy`. Forgetting this is the
-> single most common "but I fixed that already" trap.
-
----
-
-## 4. Deploy
-
-`ludus blueprint apply` writes the blueprint's range config into your range; you do **not**
-run `ludus range config set -f` yourself.
-
-```bash
 ludus blueprint apply nano-rs-nano-ludus/nanosiem
 ludus range deploy
-ludus range logs -f
 ```
 
-First boot is long — it provisions 5 VMs, stands up the `lab.local` AD domain, pulls
-images, and runs first‑boot ClickHouse migrations. A clean run ends with every host at
-`failed=0`.
+Then open **`http://10.<octet>.10.10`** over the Ludus WireGuard VPN (`<octet>` = your range's
+second octet, from `ludus range list`) and visit **`/setup`** to claim the admin account. Done.
 
----
+> Ludus also builds a router from `debian-11-x64-server-template` on every deploy — a standard
+> Ludus install already has it. If a deploy fails instantly saying that template doesn't exist,
+> run `ludus templates build -n debian-11-x64-server-template` first.
 
-## 5. Access (over the Ludus WireGuard VPN)
+## What you get
 
-| Service | URL |
+A 5‑VM range on VLAN 10 (`10.<octet>.10.0/24`), all joined to `lab.local`:
+**SIEM** `.10` · **proxy/aggregator** `.11` · **DC01** `.20` · **SRV01** `.21` · **WS01** `.30`.
+The whole nano app — web, API, search, `/ingest/` — is served through nginx on port 80.
+
+**Log flow:** Sysmon + Windows Event Logs → Vector agent on each Windows box → aggregator (`.11`)
+→ SIEM Vector pipeline → ClickHouse. Events are searchable immediately as raw `message` +
+`source_type`; to extract structured fields, deploy the `windows_event` / `windows_sysmon`
+parsers from the in‑app Parser Repository (open‑core ships none deployed).
+
+**Packaging:** this repo is a Ludus Source — the `nanosiem` blueprint lives in `blueprints/nanosiem/`,
+the five `nano_*` roles are vendored under `ansible/roles/`, and `geerlingguy.docker` is declared
+in `requirements.yml`.
+
+| Role | Purpose |
 |---|---|
-| **nano UI / API** | `http://10.<octet>.10.10` (nginx :80) |
+| `nano_stack` | Full nano SIEM stack on the SIEM box (Docker Compose, GHCR open‑core images) |
+| `nano_sysmon` | Sysmon (SwiftOnSecurity config) on Windows + the temp‑redirect workaround |
+| `nano_vector_aggregator` | Vector aggregator on the proxy box (agent intake → SIEM) |
+| `nano_vector_agent` | Vector agent on Windows (Event Log + Sysmon collection) |
+| `nano_conduit_proxy` | Conduit MITM proxy + CA trust for HTTP(S) traffic capture |
 
-The whole app (web, API, search, `/ingest/`) is served through nginx on **port 80** — no
-service-specific ports. On first visit you're redirected to **`/setup`** to create the
-admin account (it's open until claimed — do it promptly).
+<details>
+<summary><b>Customize</b> — event channels, VM sizing, single‑box iteration</summary>
 
-`<octet>` is your range's second octet (`ludus range list`).
+All edits go in `blueprints/nanosiem/range-config.yml`.
 
----
-
-## Log flow
-
-1. **Sysmon** (installed by `nano_sysmon`) and the classic **Windows Event Logs** are read
-   by the **Vector agent** on each Windows box via the native `windows_event_log` source.
-2. The agent tags Sysmon as `source_type=windows_sysmon` and everything else as
-   `windows_event`, and ships over the Vector protocol to the **aggregator** (`.10.11:9000`).
-3. The **aggregator** buffers to disk and forwards to the **SIEM** (`.10.10:6000`).
-4. The SIEM's **Vector** runs the nano pipeline (auth → parse → route → ClickHouse).
-
-Events are searchable immediately as raw `message` + `source_type`. To extract structured
-fields (`process_name`, `src_host`, …), **deploy the `windows_event` / `windows_sysmon`
-parsers** from the in‑app Parser Repository — open‑core ships with none deployed.
-
----
-
-## Customization
-
-**Event-log channels** — override `vector_eventlog_channels` per host in
-`blueprints/nanosiem/range-config.yml`:
+**Event‑log channels** — override `vector_eventlog_channels` per host:
 
 ```yaml
 role_vars:
@@ -176,40 +90,56 @@ role_vars:
     - "Microsoft-Windows-Windows Defender/Operational"
 ```
 
-**Resource sizing** — adjust `ram_gb` / `cpus` in `blueprints/nanosiem/range-config.yml`.
-Minimums: SIEM 12 GB / 4 CPU (16/8 recommended) · aggregator 2 GB / 2 CPU · DC 4 GB / 2 CPU ·
-workstation 4 GB / 2 CPU.
+**Resource sizing** — adjust `ram_gb` / `cpus`. Minimums: SIEM 12 GB / 4 CPU (16/8 recommended) ·
+aggregator 2 GB / 2 CPU · DC 4 GB / 2 CPU · workstation 4 GB / 2 CPU.
 
-**Iterate on a single box** (after re‑syncing the source — see the #1 gotcha above):
+**Iterate on one box** (after re‑syncing the source — see *Editing the lab* below):
 
 ```bash
 ludus range deploy -t user-defined-roles --limit <RANGE>-nanosiem   # just the SIEM
 ludus range deploy -t user-defined-roles --limit <RANGE>-dc01       # just DC01's roles
 ```
+</details>
 
----
+<details>
+<summary><b>Editing the lab</b> — re‑sync the source after any change</summary>
 
-## Troubleshooting
+`ludus range deploy` runs the copy of each role the **Ludus server** holds from the source
+snapshot, *not* the files on your disk. After editing anything under `ansible/roles/` or the
+range config you **must** re‑sync first, then re‑apply + deploy:
 
-These are the real failure modes we hit building this lab. Most are handled automatically
-by the roles; this is what they are and what to do if one bites.
+- **git source:** push your commit, then `ludus source sync nano-rs-nano-ludus`
+- **local dev source:** `ludus source update nano-rs-nano-ludus -d .`
+
+Then `ludus blueprint apply nano-rs-nano-ludus/nanosiem` + `ludus range deploy`. Forgetting the
+re‑sync is the single most common "but I fixed that already" trap.
+
+For local development you can add the source straight from a clone instead of GitHub:
+`ludus source add -d . --id nano-rs-nano-ludus`.
+</details>
+
+<details>
+<summary><b>Troubleshooting</b> — the real failure modes we hit building this lab</summary>
+
+Most are handled automatically by the roles; this is what they are and what to do if one bites.
+`<RANGE>` below = your range ID, the prefix on every VM name (`ludus range list`).
 
 ### Windows `TASK [Reboot]` → `winrm … the specified credentials were rejected`
 A **Ludus base‑config** task (not a nano role) sometimes fails its WinRM auth on a freshly
-provisioned Windows box — most often the **Win11 workstation** — while the Server‑2022
-boxes reboot fine. It's a Ludus platform reboot/credential race, one layer below this lab.
+provisioned Windows box — most often the **Win11 workstation** — while the Server‑2022 boxes
+reboot fine. It's a Ludus platform reboot/credential race, one layer below this lab.
 
-- **Retry it:** `ludus range deploy --limit <RANGE>-ws01` — a clean retry usually gets past
-  the reboot and continues into the roles.
+- **Retry it:** `ludus range deploy --limit <RANGE>-ws01` — a clean retry usually gets past the
+  reboot and continues into the roles.
 - The roles themselves are fine: `ludus range deploy -t user-defined-roles --limit <RANGE>-ws01`
   runs **only** the role stage (skipping the base reboot) and installs the agent cleanly.
 
 ### `Gathering Facts` fails with `Add-CSharpType … could not find file …\Temp\…dll`
-Some stock Windows Server 2022 templates silently strip freshly‑compiled executables from
-the per‑user temp, which breaks Ansible's C# module compilation. **The `nano_sysmon` role
-works around this automatically** (it redirects `localuser`'s TEMP to `C:\Windows\Temp`
-via a `raw` task before anything else). If a box still fails on its *very first*
-`Gathering Facts`, set it by hand over RDP and re‑deploy:
+Some stock Windows Server 2022 templates silently strip freshly‑compiled executables from the
+per‑user temp, which breaks Ansible's C# module compilation. **The `nano_sysmon` role works
+around this automatically** (it redirects `localuser`'s TEMP to `C:\Windows\Temp` via a `raw`
+task before anything else). If a box still fails on its *very first* `Gathering Facts`, set it by
+hand over RDP and re‑deploy:
 
 ```powershell
 $sid = (New-Object System.Security.Principal.NTAccount("localuser")).Translate([System.Security.Principal.SecurityIdentifier]).Value
@@ -221,39 +151,25 @@ if (-not $loaded) { [gc]::Collect(); reg unload "HKU\$sid" | Out-Null }
 ```
 
 ### `docker compose pull` times out resolving a registry
-The Ludus lab DNS forwarder resolves fine at idle but can choke under a fully‑parallel
-image pull. The `nano_stack` / aggregator / conduit roles already **serialize the pull**
-(`COMPOSE_PARALLEL_LIMIT=1`) and **retry** it, so this is mostly handled — if it still
-fails after the retries, just re‑run `ludus range deploy` (it resumes).
+The Ludus lab DNS forwarder resolves fine at idle but can choke under a fully‑parallel image
+pull. The `nano_stack` / aggregator / conduit roles already **serialize the pull**
+(`COMPOSE_PARALLEL_LIMIT=1`) and **retry** it, so this is mostly handled — if it still fails after
+the retries, just re‑run `ludus range deploy` (it resumes).
 
 ### Search throws `crypto.randomUUID is not a function` in the browser
-`crypto.randomUUID` only exists in a **secure context**. Over plain `http://<ip>` it's
-undefined. Fixed in recent `nano-web` images — make sure you're on `:latest`. For real use,
-front the SIEM with **HTTPS** anyway (other browser security gates apply over plain HTTP).
+`crypto.randomUUID` only exists in a **secure context**. Over plain `http://<ip>` it's undefined.
+Fixed in recent `nano-web` images — make sure you're on `:latest`. For real use, front the SIEM
+with **HTTPS** anyway (other browser security gates apply over plain HTTP).
 
 ### The deploy "keeps failing on the same box" after you fixed it
-You almost certainly edited a role but didn't re‑sync the source. `ludus range deploy` uses
-the **server‑cached** role from the source snapshot. Re‑sync first — local dev:
-`ludus source update nano-rs-nano-ludus -d .`; git: push then
-`ludus source sync nano-rs-nano-ludus` — then `ludus blueprint apply` + deploy.
-
----
-
-## What's in here
-
-| Role | Purpose |
-|---|---|
-| `nano_stack` | Full nano SIEM stack on the SIEM box (Docker Compose, GHCR open‑core images) |
-| `nano_sysmon` | Install Sysmon (SwiftOnSecurity config) on Windows + the temp‑redirect workaround |
-| `nano_vector_aggregator` | Vector aggregator on the proxy box (agent intake → SIEM) |
-| `nano_vector_agent` | Vector agent on Windows (Event Log + Sysmon collection) |
-| `nano_conduit_proxy` | Conduit MITM proxy + CA trust for HTTP(S) traffic capture |
-
----
+You almost certainly edited a role but didn't re‑sync the source (see *Editing the lab* above).
+`ludus range deploy` uses the server‑cached role from the source snapshot — re‑sync, re‑apply,
+then deploy.
+</details>
 
 ## License
 
-[Apache-2.0](LICENSE).
+[Apache‑2.0](LICENSE).
 
-> Internal Ansible variables keep a `nanosiem_*` prefix (they map to the `nanosiem`
-> database/users the images expect) — that's intentional and not a typo.
+> Internal Ansible variables keep a `nanosiem_*` prefix (they map to the `nanosiem` database/users
+> the images expect) — that's intentional, not a typo.
