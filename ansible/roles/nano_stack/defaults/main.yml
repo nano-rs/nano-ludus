@@ -66,6 +66,15 @@ nanosiem_hot_retention_days: 90
 nanosiem_warm_retention_days: 30
 nanosiem_tier: unrestricted
 
+# ---- ClickHouse memory (NAN-2252) ----
+# The upstream open-core compose interpolates ${CLICKHOUSE_MEM_LIMIT:-2G} for
+# the ClickHouse container. Mirror install.sh's sizing here: VM RAM rounded to
+# GiB minus a 4G reserve for the rest of the stack, 2G floor — the blueprint's
+# 16 GB SIEM VM gets 12G. Without this the lab falls back to 2G, whose 1.6 GiB
+# usable ceiling permanently wedges ingest around 300 eps (NAN-2251) — fatal
+# for a range that blasts sysmon volume at the tenant.
+nanosiem_clickhouse_mem_limit: "{{ [((ansible_memtotal_mb / 1024) | round | int) - 4, 2] | max }}G"
+
 # NOTE (NAN-1267): the lab deploys exactly what open-core ships. Monitoring
 # (Prometheus/Grafana) and the meloD Cloudflare-AI-Gateway env are NOT bolted on
 # here — the opensource compose doesn't include them. If those are wanted in the
