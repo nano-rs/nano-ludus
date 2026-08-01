@@ -56,9 +56,20 @@ A 5‑VM range on VLAN 10 (`10.<octet>.10.0/24`), all joined to `lab.local`:
 The whole nano app — web, API, search, `/ingest/` — is served through nginx on port 80.
 
 **Log flow:** Sysmon + Windows Event Logs → Vector agent on each Windows box → aggregator (`.11`)
-→ SIEM Vector pipeline → ClickHouse. Events are searchable immediately as raw `message` +
-`source_type`; to extract structured fields, deploy the `windows_event` / `windows_sysmon`
-parsers from the in‑app Parser Repository (open‑core ships none deployed).
+→ SIEM Vector pipeline → ClickHouse. The agent tags Sysmon events `source_type=windows_sysmon`
+and everything else `source_type=windows_event`, and flattens each event to JSON in `message`.
+
+Events are searchable immediately as raw `message` + `source_type`. To extract structured
+fields, deploy two parsers from the in‑app Parser Repository (open‑core ships none deployed):
+
+| Parser | Source type it claims |
+|---|---|
+| **Microsoft Sysmon** | `windows_sysmon` |
+| **Windows Event Log** | `windows_event` |
+
+Take the JSON variants — the ones above. The repository also carries XML and rendered-text
+parsers for the same two sources; those read different wire formats and will silently produce
+nothing against this lab's JSON. Deploy exactly one parser per source type.
 
 **Packaging:** this repo is a Ludus Source — the `nanosiem` blueprint lives in `blueprints/nanosiem/`,
 the five `nano_*` roles are vendored under `ansible/roles/`, and `geerlingguy.docker` is declared
