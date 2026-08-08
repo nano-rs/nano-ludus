@@ -1,5 +1,6 @@
 ---
 galaxy_info:
+  role_name: nano_stack
   author: NanoSIEM
   description: Deploy the full NanoSIEM stack via Docker Compose
   license: Apache-2.0

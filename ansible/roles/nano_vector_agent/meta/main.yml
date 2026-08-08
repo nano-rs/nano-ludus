@@ -1,5 +1,6 @@
 ---
 galaxy_info:
+  role_name: nano_vector_agent
   author: NanoSIEM
   description: Vector agent for Windows - collects Event Logs and ships to aggregator
   license: Apache-2.0

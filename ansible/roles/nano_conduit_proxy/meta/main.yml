@@ -1,5 +1,6 @@
 ---
 galaxy_info:
+  role_name: nano_conduit_proxy
   author: NanoSIEM
   description: Conduit MITM proxy - intercepts TLS traffic and logs to Vector aggregator
   license: Apache-2.0
