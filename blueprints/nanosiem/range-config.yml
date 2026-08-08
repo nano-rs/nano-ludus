@@ -8,18 +8,25 @@
 #
 # VLAN 10: 10.x.10.0/24 (where x = your Ludus range's second octet)
 #
-# Usage:
-#   1. ludus range config set -f blueprint.yml
-#   2. ludus range deploy
+# Usage (this repo is a Ludus Source — see README "Packaging"):
+#   1. ludus source add <this repo>            # or `-d .` for a local clone
+#   2. ludus blueprint apply nano-rs-nano-ludus/nanosiem
+#   3. ludus range deploy
 #
 # Before deploying:
 #   - Build required templates: debian-12, win2022-server, win11-22h2-enterprise
-#   - Add roles: ludus ansible role add -d roles/nano_stack
-#                ludus ansible role add -d roles/nano_vector_aggregator
-#                ludus ansible role add -d roles/nano_vector_agent
-#                ludus ansible role add -d roles/nano_sysmon
-#                ludus ansible role add -d roles/nano_conduit_proxy
-#                ludus ansible role add geerlingguy.docker
+#
+# Role names below carry the `NanoSIEM.` prefix (NAN-2358). The five nano_*
+# roles are vendored under `ansible/roles/`, and every one of them declares
+# `author: NanoSIEM` in its meta/main.yml — so ansible-galaxy installs them as
+# `NanoSIEM.<role_name>`, not under the bare directory name. Referencing them
+# bare here makes `ludus range deploy` fail to resolve the roles, which is what
+# an external tester hit: the range would not deploy until every entry was
+# hand-prefixed. `geerlingguy.docker` was already namespaced, which is why it
+# was the only one that resolved.
+#
+# If you rename a role or drop its `author`, update BOTH sides or this breaks
+# again silently.
 #
 # The SIEM box pulls the public open-core images from ghcr.io/nano-rs (no auth).
 
@@ -37,7 +44,7 @@ ludus:
     linux: true
     roles:
       - geerlingguy.docker
-      - nano_stack
+      - NanoSIEM.nano_stack
     role_vars:
       docker_users:
         - localuser
@@ -62,8 +69,8 @@ ludus:
     linux: true
     roles:
       - geerlingguy.docker
-      - nano_vector_aggregator
-      - nano_conduit_proxy
+      - NanoSIEM.nano_vector_aggregator
+      - NanoSIEM.nano_conduit_proxy
     role_vars:
       docker_users:
         - localuser
@@ -89,8 +96,8 @@ ludus:
       fqdn: lab.local
       role: primary-dc
     roles:
-      - nano_sysmon
-      - nano_vector_agent
+      - NanoSIEM.nano_sysmon
+      - NanoSIEM.nano_vector_agent
     role_vars:
       # Points to the aggregator/proxy box (last octet 11)
       vector_aggregator_ip: "10.{{ range_second_octet }}.10.11"
@@ -124,8 +131,8 @@ ludus:
       fqdn: lab.local
       role: member
     roles:
-      - nano_sysmon
-      - nano_vector_agent
+      - NanoSIEM.nano_sysmon
+      - NanoSIEM.nano_vector_agent
     role_vars:
       vector_aggregator_ip: "10.{{ range_second_octet }}.10.11"
       vector_aggregator_port: 9000
@@ -148,8 +155,8 @@ ludus:
       fqdn: lab.local
       role: member
     roles:
-      - nano_sysmon
-      - nano_vector_agent
+      - NanoSIEM.nano_sysmon
+      - NanoSIEM.nano_vector_agent
     role_vars:
       vector_aggregator_ip: "10.{{ range_second_octet }}.10.11"
       vector_aggregator_port: 9000

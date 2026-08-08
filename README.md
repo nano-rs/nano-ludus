@@ -75,13 +75,18 @@ nothing against this lab's JSON. Deploy exactly one parser per source type.
 the five `nano_*` roles are vendored under `ansible/roles/`, and `geerlingguy.docker` is declared
 in `requirements.yml`.
 
-| Role | Purpose |
+Each role declares `author: NanoSIEM` in its `meta/main.yml`, so ansible‑galaxy installs it as
+`NanoSIEM.<role>` — that is the name the range config must use. Referencing a role bare fails to
+resolve at deploy time (NAN‑2358). Drop or change an `author` and you must update
+`range-config.yml` to match.
+
+| Role (as referenced in `range-config.yml`) | Purpose |
 |---|---|
-| `nano_stack` | Full nano SIEM stack on the SIEM box (Docker Compose, GHCR open‑core images) |
-| `nano_sysmon` | Sysmon (SwiftOnSecurity config) on Windows + the temp‑redirect workaround |
-| `nano_vector_aggregator` | Vector aggregator on the proxy box (agent intake → SIEM) |
-| `nano_vector_agent` | Vector agent on Windows (Event Log + Sysmon collection) |
-| `nano_conduit_proxy` | Conduit MITM proxy + CA trust for HTTP(S) traffic capture |
+| `NanoSIEM.nano_stack` | Full nano SIEM stack on the SIEM box (Docker Compose, GHCR open‑core images) |
+| `NanoSIEM.nano_sysmon` | Sysmon (SwiftOnSecurity config) on Windows + the temp‑redirect workaround |
+| `NanoSIEM.nano_vector_aggregator` | Vector aggregator on the proxy box (agent intake → SIEM) |
+| `NanoSIEM.nano_vector_agent` | Vector agent on Windows (Event Log + Sysmon collection) |
+| `NanoSIEM.nano_conduit_proxy` | Conduit MITM proxy + CA trust for HTTP(S) traffic capture |
 
 <details>
 <summary><b>Customize</b> — event channels, VM sizing, single‑box iteration</summary>
