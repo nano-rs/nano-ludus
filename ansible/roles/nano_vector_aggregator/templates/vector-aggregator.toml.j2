@@ -49,8 +49,9 @@ acknowledgements.enabled = true
 # what gives durability across a SIEM outage; `block` adds nothing to that and
 # converts a full buffer into fleet-wide backpressure - the agents' own sinks
 # time out, their buffers fill, and every endpoint stops collecting at once,
-# with no error anywhere downstream. Shed instead, and let the metrics and
-# healthcheck say so.
+# with no error anywhere downstream. Restarting does not clear that, because a
+# restart preserves the backlog rather than draining it. Shed instead, and let
+# the metrics and healthcheck say so.
 [sinks.siem.buffer]
 type = "disk"
 max_size = {{ aggregator_buffer_max_bytes }}

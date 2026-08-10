@@ -42,8 +42,10 @@ vector_buffer_max_bytes: 536870912
 # What the agent does when that buffer fills (NAN-2364).
 #   drop_newest - shed new events, keep collecting (default; lab-safe)
 #   block       - apply backpressure, which freezes the windows_event_log
-#                 source and does NOT recover on restart. Only choose this if
-#                 you would rather lose collection than lose events.
+#                 source for as long as the aggregator cannot accept events;
+#                 restarting preserves the backlog rather than clearing it, so
+#                 it does not restore collection. Only choose this if you would
+#                 rather lose collection than lose events.
 vector_buffer_when_full: drop_newest
 
 # ---- Conduit MITM Proxy (optional) ----

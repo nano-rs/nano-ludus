@@ -39,25 +39,35 @@ if [ "$BUFFER_PCT" -le 0 ]; then
 fi
 
 printf '%s\n' "$metrics" | awk -v pct="$BUFFER_PCT" '
-    # Pull component_id="..." out of a Prometheus label set.
-    function cid(line,   m) {
+    # Identify a buffer by component AND stage. A multi-stage buffer reports
+    # one reading per stage, and pairing stage 0 size against stage 1 capacity
+    # would produce a ratio describing neither.
+    function bufkey(line,   c, s) {
+        c = "?"; s = ""
         if (match(line, /component_id="[^"]*"/)) {
-            return substr(line, RSTART + 14, RLENGTH - 15)
+            c = substr(line, RSTART + 14, RLENGTH - 15)
         }
-        return "?"
+        if (match(line, /stage="[^"]*"/)) {
+            s = "/" substr(line, RSTART + 7, RLENGTH - 8)
+        }
+        return c s
     }
-    # Keep the largest reading per component rather than summing. Vector emits
-    # vector_buffer_byte_size and vector_buffer_size_bytes as aliases of each
-    # other (verified on 0.5x - same component, same value, both present), so
-    # adding them would double-count and report a half-full buffer as full. Max
-    # also keeps a multi-stage buffer honest rather than inflating it.
+    # Keep the largest reading per buffer rather than summing. Vector emits
+    # buffer_byte_size and buffer_size_bytes as aliases of each other (verified
+    # on 0.5x - same component, same value, both present), so adding them would
+    # double-count and report a half-full buffer as full.
     function keep_max(arr, key, v) { if (v > arr[key]) arr[key] = v }
 
-    /^vector_buffer_byte_size\{/                { keep_max(size, cid($0), $2) }
-    /^vector_buffer_size_bytes\{/               { keep_max(size, cid($0), $2) }
-    /^vector_buffer_max_byte_size\{/            { keep_max(cap,  cid($0), $2) }
-    /^vector_buffer_max_size_bytes\{/           { keep_max(cap,  cid($0), $2) }
-    /^vector_buffer_discarded_events_total\{/   { keep_max(disc, cid($0), $2) }
+    # Match on the metric SUFFIX, not a vector_ prefix: this role sets
+    # internal_metrics namespace = "nanosiem_aggregator", so the exporter emits
+    # nanosiem_aggregator_buffer_byte_size, not vector_buffer_byte_size.
+    # Anchoring to vector_ made every pattern miss and the check silently pass
+    # at any utilization. Suffix matching survives a namespace change too.
+    /^[A-Za-z0-9_]*buffer_byte_size\{/              { keep_max(size, bufkey($0), $2) }
+    /^[A-Za-z0-9_]*buffer_size_bytes\{/             { keep_max(size, bufkey($0), $2) }
+    /^[A-Za-z0-9_]*buffer_max_byte_size\{/          { keep_max(cap,  bufkey($0), $2) }
+    /^[A-Za-z0-9_]*buffer_max_size_bytes\{/         { keep_max(cap,  bufkey($0), $2) }
+    /^[A-Za-z0-9_]*buffer_discarded_events_total\{/ { keep_max(disc, bufkey($0), $2) }
     END {
         dropped = 0
         for (c in disc) { dropped += disc[c] }
@@ -73,10 +83,13 @@ printf '%s\n' "$metrics" | awk -v pct="$BUFFER_PCT" '
             }
         }
 
-        # Vector renames metrics between releases. If the buffer gauges are not
-        # there, do not invent a failure - the API check already passed.
+        # Vector renames metrics between releases and this role tracks a
+        # floating image tag. Do not invent a failure - the API check already
+        # passed - but say plainly that utilization went unchecked, so this
+        # shows up in `docker inspect ... .State.Health` as a gap rather than
+        # as a clean bill of health.
         if (worst < 0) {
-            print "healthy: API ok (no buffer gauges exposed)"
+            print "healthy: API ok - WARNING buffer gauges not found, utilization NOT checked"
             exit 0
         }
 

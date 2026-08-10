@@ -5,6 +5,19 @@
       - nanosiem_siem_ip | length > 0
     fail_msg: "nanosiem_siem_ip must be set in role_vars"
 
+# NAN-2364: the healthcheck renders this through Jinja's `int` filter, which
+# turns any non-numeric value into 0 - silently disabling the buffer check
+# instead of failing. Catch a bad override here, where the error is visible.
+- name: Validate buffer health threshold
+  ansible.builtin.assert:
+    that:
+      - aggregator_health_buffer_pct is integer
+      - aggregator_health_buffer_pct >= 0
+      - aggregator_health_buffer_pct <= 100
+    fail_msg: >-
+      aggregator_health_buffer_pct must be an integer between 0 and 100
+      (got: {{ aggregator_health_buffer_pct }}). 0 disables the buffer check.
+
 - name: Install required packages
   ansible.builtin.apt:
     name:

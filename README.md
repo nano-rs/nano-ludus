@@ -123,14 +123,23 @@ Disk buffers have a hard floor of 256 MiB — `max_size` must be at least `26843
 Vector refuses to start below it, so a too-small override fails the deploy rather than the lab.
 
 Setting any of these to `block` trades collection for durability, and the trade is worse than it
-sounds: because acknowledgements are enabled end to end, one hop that stops draining freezes every
-hop above it — including the Windows Event Log readers — and a full disk buffer is still full after
-a restart, so the lab does not recover on its own. Prefer `drop_newest` and watch the buffer instead:
+sounds: one hop that stops draining applies backpressure to every hop above it — including the
+Windows Event Log readers — so the whole lab stops collecting at once. Restarting does not clear it,
+because a restart preserves the backlog rather than draining it: collection stays frozen for as long
+as the downstream hop cannot accept events. (The buffer is not permanently deadlocked — once
+downstream recovers it drains normally, and you never need to delete a buffer directory.)
+
+Prefer `drop_newest` and watch the aggregator's buffer instead:
 
 ```bash
-curl -s http://<proxy-ip>:9598/metrics | grep -E 'vector_buffer_(byte_size|max_byte_size|discarded)'
+# the aggregator's own sink buffer (metrics carry the nanosiem_aggregator_ namespace)
+curl -s http://<proxy-ip>:9598/metrics | grep -E 'buffer_(byte_size|max_byte_size|discarded_events)'
 docker inspect vector-aggregator --format '{{json .State.Health}}'   # red at >=90% full
 ```
+
+That endpoint covers the **aggregator hop only**. The Windows agent sends its internal metrics to a
+console sink (read them in the Vector service log on the endpoint), and the Conduit sidecar exposes
+no metrics endpoint at all — so drops at those two hops are not visible from the proxy box.
 
 **Iterate on one box** (after re‑syncing the source — see *Editing the lab* below):
 

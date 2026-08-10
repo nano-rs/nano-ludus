@@ -25,8 +25,10 @@ aggregator_buffer_max_bytes: 1073741824
 # What the aggregator does when that buffer fills (NAN-2364).
 #   drop_newest - shed new events, keep accepting from agents (default)
 #   block       - apply backpressure all the way back to the endpoints, which
-#                 stops the whole lab collecting and does NOT recover on
-#                 restart. Deliberate choice only.
+#                 stops the whole lab collecting for as long as the SIEM cannot
+#                 accept events; a restart preserves the backlog rather than
+#                 draining it, so it does not restore collection on its own.
+#                 Deliberate choice only.
 aggregator_buffer_when_full: drop_newest
 
 # ---- Health ----
