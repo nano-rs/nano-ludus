@@ -109,6 +109,29 @@ role_vars:
 **Resource sizing** — adjust `ram_gb` / `cpus`. Minimums: SIEM 12 GB / 4 CPU (16/8 recommended) ·
 aggregator 2 GB / 2 CPU · DC 4 GB / 2 CPU · workstation 4 GB / 2 CPU.
 
+**Buffering and backpressure** — every Vector hop (agent → aggregator → SIEM) writes to a disk
+buffer, so a SIEM restart does not lose events. When a buffer *fills*, the default is to shed the
+newest events rather than block:
+
+| Variable | Default | Role |
+| --- | --- | --- |
+| `vector_buffer_max_bytes` / `vector_buffer_when_full` | 512 MB / `drop_newest` | agent |
+| `aggregator_buffer_max_bytes` / `aggregator_buffer_when_full` | 1 GB / `drop_newest` | aggregator |
+| `conduit_buffer_max_bytes` / `conduit_buffer_when_full` | 512 MB / `drop_newest` | conduit proxy |
+
+Disk buffers have a hard floor of 256 MiB — `max_size` must be at least `268435488` bytes, and
+Vector refuses to start below it, so a too-small override fails the deploy rather than the lab.
+
+Setting any of these to `block` trades collection for durability, and the trade is worse than it
+sounds: because acknowledgements are enabled end to end, one hop that stops draining freezes every
+hop above it — including the Windows Event Log readers — and a full disk buffer is still full after
+a restart, so the lab does not recover on its own. Prefer `drop_newest` and watch the buffer instead:
+
+```bash
+curl -s http://<proxy-ip>:9598/metrics | grep -E 'vector_buffer_(byte_size|max_byte_size|discarded)'
+docker inspect vector-aggregator --format '{{json .State.Health}}'   # red at >=90% full
+```
+
 **Iterate on one box** (after re‑syncing the source — see *Editing the lab* below):
 
 ```bash

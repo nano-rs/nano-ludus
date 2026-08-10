@@ -32,6 +32,13 @@
     mode: "0644"
   notify: restart vector-aggregator
 
+- name: Template aggregator container healthcheck
+  ansible.builtin.template:
+    src: healthcheck.sh.j2
+    dest: "{{ aggregator_deploy_dir }}/healthcheck.sh"
+    mode: "0755"
+  notify: restart vector-aggregator
+
 - name: Template docker-compose for aggregator
   ansible.builtin.template:
     src: docker-compose.yml.j2

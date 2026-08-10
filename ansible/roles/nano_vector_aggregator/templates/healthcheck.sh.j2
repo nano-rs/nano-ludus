@@ -1,0 +1,90 @@
+#!/bin/sh
+# Vector aggregator container healthcheck (NAN-2364).
+#
+# Managed by the nano_vector_aggregator Ansible role - do not edit in place.
+#
+# The old healthcheck was `wget --spider http://localhost:9598/metrics`, which
+# issues a HEAD request the Prometheus exporter does not answer, so the
+# container reported (unhealthy) from the moment it started. An always-red
+# health flag is worse than none: the one time it mattered - a full disk buffer
+# freezing the whole lab - nobody looked, because it had always been red.
+#
+# This checks two things that are actually true or false:
+#   1. Vector's API answers /health.
+#   2. No sink buffer is close to full. A backing-up buffer means the SIEM is
+#      not draining, and with when_full=drop_newest that is the point at which
+#      events start being shed.
+#
+# POSIX sh + busybox wget/awk only - the aggregator runs the alpine image.
+
+set -u
+
+API_URL="http://127.0.0.1:8686/health"
+METRICS_URL="http://127.0.0.1:9598/metrics"
+BUFFER_PCT={{ aggregator_health_buffer_pct | int }}
+
+if ! wget -q -O /dev/null "$API_URL" 2>/dev/null; then
+    echo "unhealthy: Vector API ${API_URL} did not answer"
+    exit 1
+fi
+
+metrics=$(wget -q -O - "$METRICS_URL" 2>/dev/null) || {
+    echo "unhealthy: metrics endpoint ${METRICS_URL} unreachable"
+    exit 1
+}
+
+if [ "$BUFFER_PCT" -le 0 ]; then
+    echo "healthy: API ok (buffer check disabled)"
+    exit 0
+fi
+
+printf '%s\n' "$metrics" | awk -v pct="$BUFFER_PCT" '
+    # Pull component_id="..." out of a Prometheus label set.
+    function cid(line,   m) {
+        if (match(line, /component_id="[^"]*"/)) {
+            return substr(line, RSTART + 14, RLENGTH - 15)
+        }
+        return "?"
+    }
+    # Keep the largest reading per component rather than summing. Vector emits
+    # vector_buffer_byte_size and vector_buffer_size_bytes as aliases of each
+    # other (verified on 0.5x - same component, same value, both present), so
+    # adding them would double-count and report a half-full buffer as full. Max
+    # also keeps a multi-stage buffer honest rather than inflating it.
+    function keep_max(arr, key, v) { if (v > arr[key]) arr[key] = v }
+
+    /^vector_buffer_byte_size\{/                { keep_max(size, cid($0), $2) }
+    /^vector_buffer_size_bytes\{/               { keep_max(size, cid($0), $2) }
+    /^vector_buffer_max_byte_size\{/            { keep_max(cap,  cid($0), $2) }
+    /^vector_buffer_max_size_bytes\{/           { keep_max(cap,  cid($0), $2) }
+    /^vector_buffer_discarded_events_total\{/   { keep_max(disc, cid($0), $2) }
+    END {
+        dropped = 0
+        for (c in disc) { dropped += disc[c] }
+        if (dropped > 0) {
+            printf "warn: %d events shed by full buffers since start\n", dropped
+        }
+
+        worst = -1
+        for (c in size) {
+            if ((c in cap) && cap[c] > 0) {
+                r = 100 * size[c] / cap[c]
+                if (r > worst) { worst = r; name = c }
+            }
+        }
+
+        # Vector renames metrics between releases. If the buffer gauges are not
+        # there, do not invent a failure - the API check already passed.
+        if (worst < 0) {
+            print "healthy: API ok (no buffer gauges exposed)"
+            exit 0
+        }
+
+        printf "buffer %s at %d%% of capacity\n", name, worst
+        if (worst >= pct) {
+            printf "unhealthy: sink buffer %s >= %d%% - SIEM is not draining\n", name, pct
+            exit 1
+        }
+        exit 0
+    }
+'
