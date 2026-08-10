@@ -109,6 +109,38 @@ role_vars:
 **Resource sizing** — adjust `ram_gb` / `cpus`. Minimums: SIEM 12 GB / 4 CPU (16/8 recommended) ·
 aggregator 2 GB / 2 CPU · DC 4 GB / 2 CPU · workstation 4 GB / 2 CPU.
 
+**Buffering and backpressure** — every Vector hop (agent → aggregator → SIEM) writes to a disk
+buffer, so a SIEM restart does not lose events. When a buffer *fills*, the default is to shed the
+newest events rather than block:
+
+| Variable | Default | Role |
+| --- | --- | --- |
+| `vector_buffer_max_bytes` / `vector_buffer_when_full` | 512 MB / `drop_newest` | agent |
+| `aggregator_buffer_max_bytes` / `aggregator_buffer_when_full` | 1 GB / `drop_newest` | aggregator |
+| `conduit_buffer_max_bytes` / `conduit_buffer_when_full` | 512 MB / `drop_newest` | conduit proxy |
+
+Disk buffers have a hard floor of 256 MiB — `max_size` must be at least `268435488` bytes, and
+Vector refuses to start below it, so a too-small override fails the deploy rather than the lab.
+
+Setting any of these to `block` trades collection for durability, and the trade is worse than it
+sounds: one hop that stops draining applies backpressure to every hop above it — including the
+Windows Event Log readers — so the whole lab stops collecting at once. Restarting does not clear it,
+because a restart preserves the backlog rather than draining it: collection stays frozen for as long
+as the downstream hop cannot accept events. (The buffer is not permanently deadlocked — once
+downstream recovers it drains normally, and you never need to delete a buffer directory.)
+
+Prefer `drop_newest` and watch the aggregator's buffer instead:
+
+```bash
+# the aggregator's own sink buffer (metrics carry the nanosiem_aggregator_ namespace)
+curl -s http://<proxy-ip>:9598/metrics | grep -E 'buffer_(byte_size|max_byte_size|discarded_events)'
+docker inspect vector-aggregator --format '{{json .State.Health}}'   # red at >=90% full
+```
+
+That endpoint covers the **aggregator hop only**. The Windows agent sends its internal metrics to a
+console sink (read them in the Vector service log on the endpoint), and the Conduit sidecar exposes
+no metrics endpoint at all — so drops at those two hops are not visible from the proxy box.
+
 **Iterate on one box** (after re‑syncing the source — see *Editing the lab* below):
 
 ```bash

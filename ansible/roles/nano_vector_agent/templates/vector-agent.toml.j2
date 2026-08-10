@@ -48,11 +48,18 @@ inputs = ["enrich_host"]
 address = "{{ vector_aggregator_ip }}:{{ vector_aggregator_port }}"
 acknowledgements.enabled = true
 
-# Disk buffer - survives agent restarts without losing events
+# Disk buffer - survives agent restarts without losing events.
+#
+# NAN-2364: when_full defaults to drop_newest, NOT block. `block` on a full
+# buffer stops the windows_event_log source itself, so an aggregator that stops
+# draining silently freezes collection on every endpoint until a human notices -
+# and restarting the agent does not clear it, because a restart preserves the
+# backlog rather than draining it. Shedding the newest events keeps the reader's
+# checkpoint moving so collection continues while the backlog waits.
 [sinks.aggregator.buffer]
 type = "disk"
 max_size = {{ vector_buffer_max_bytes }}
-when_full = "block"
+when_full = "{{ vector_buffer_when_full }}"
 
 # =============================================================================
 # Internal metrics (optional - for debugging)

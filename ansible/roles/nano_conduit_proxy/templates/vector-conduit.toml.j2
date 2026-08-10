@@ -48,7 +48,10 @@ inputs = ["parse_conduit"]
 address = "172.17.0.1:{{ conduit_vector_aggregator_port }}"
 acknowledgements.enabled = true
 
+# NAN-2364: shed rather than block when the buffer fills. Blocking here stalls
+# the proxy's own log lane behind an aggregator that is not draining, and does
+# not clear on restart.
 [sinks.aggregator.buffer]
 type = "disk"
-max_size = 536870912  # 512MB
-when_full = "block"
+max_size = {{ conduit_buffer_max_bytes }}
+when_full = "{{ conduit_buffer_when_full }}"

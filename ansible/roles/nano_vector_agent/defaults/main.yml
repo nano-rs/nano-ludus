@@ -36,8 +36,17 @@ vector_config_dir: 'C:\ProgramData\Vector'
 vector_data_dir: 'C:\ProgramData\Vector\data'
 
 # ---- Buffer ----
-# Disk buffer max size in bytes (256MB default for agent)
+# Disk buffer max size in bytes (512MB default for agent)
 vector_buffer_max_bytes: 536870912
+
+# What the agent does when that buffer fills (NAN-2364).
+#   drop_newest - shed new events, keep collecting (default; lab-safe)
+#   block       - apply backpressure, which freezes the windows_event_log
+#                 source for as long as the aggregator cannot accept events;
+#                 restarting preserves the backlog rather than clearing it, so
+#                 it does not restore collection. Only choose this if you would
+#                 rather lose collection than lose events.
+vector_buffer_when_full: drop_newest
 
 # ---- Conduit MITM Proxy (optional) ----
 # Set to configure system proxy + install CA cert on this Windows box

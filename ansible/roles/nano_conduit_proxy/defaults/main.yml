@@ -40,3 +40,10 @@ conduit_deploy_dir: /opt/conduit-proxy
 
 # ---- Vector aggregator (local on same box) ----
 conduit_vector_aggregator_port: 9000
+
+# Disk buffer for the proxy's log lane, in bytes (512MB default)
+conduit_buffer_max_bytes: 536870912
+
+# What to do when that buffer fills (NAN-2364). drop_newest sheds events;
+# block stalls the proxy's log lane and does not recover on restart.
+conduit_buffer_when_full: drop_newest

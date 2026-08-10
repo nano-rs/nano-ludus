@@ -22,6 +22,21 @@ aggregator_deploy_dir: /opt/vector-aggregator
 # Disk buffer max size in bytes (1GB default)
 aggregator_buffer_max_bytes: 1073741824
 
+# What the aggregator does when that buffer fills (NAN-2364).
+#   drop_newest - shed new events, keep accepting from agents (default)
+#   block       - apply backpressure all the way back to the endpoints, which
+#                 stops the whole lab collecting for as long as the SIEM cannot
+#                 accept events; a restart preserves the backlog rather than
+#                 draining it, so it does not restore collection on its own.
+#                 Deliberate choice only.
+aggregator_buffer_when_full: drop_newest
+
+# ---- Health ----
+# Container healthcheck fails when the fullest sink buffer reaches this
+# percentage, so a backing-up aggregator shows as (unhealthy) in `docker ps`
+# instead of failing silently. Set to 0 to check only the Vector API.
+aggregator_health_buffer_pct: 90
+
 # ---- Processing ----
 # Add source_type enrichment for Windows events
 aggregator_enrich_windows_events: true
