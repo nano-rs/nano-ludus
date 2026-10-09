@@ -1,0 +1,9 @@
+---
+# Hosted lean tenant: a collector credential for most sources, plus one
+# source-bound credential.
+render_parts: [aggregator]
+nano_ingest_mode: hec
+nano_ingest_url: https://acme.ingest.nano.rs/
+nano_ingest_token: TESTTOKEN-collector-0123456789abcdef
+nano_ingest_source_tokens:
+  windows_sysmon: TESTTOKEN-sysmon-0123456789abcdef

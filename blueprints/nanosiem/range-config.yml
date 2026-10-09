@@ -2,9 +2,17 @@
 #
 # Topology:
 #   [Win DC01]  ─┐  event logs ──► Vector agent ──┐
-#   [Win SRV01] ─┤  HTTP traffic ──► Conduit ───┤──► [Proxy/Aggregator] ──► [SIEM] ──► ClickHouse
-#   [Win WS01]  ─┘  (MITM + CA trust)          │    (Vector + Conduit)       (Debian)
-#                                                └──► (Debian .10.11)
+#   [Win SRV01] ─┤  HTTP traffic ──► Conduit ───┤──► [Proxy/Aggregator] ──HEC──► [SIEM: open-core lake]
+#   [Win WS01]  ─┘  (MITM + CA trust)          │    (Vector 0.59 + Conduit)     (OCSF 1.9 on RustFS)
+#                                                └──► (Debian .10.11)              (Debian .10.10)
+#
+# NAN-3397: the SIEM box runs the open-core LAKE install (install.sh, lake
+# profile) instead of the retired gen1 ClickHouse stack, and the aggregator
+# ships over authenticated Splunk HEC. To ship the range to a hosted lean
+# tenant instead (or as well), point the aggregator's nano_ingest_url at
+# https://<tenant>.ingest.nano.rs and give it that tenant's ingest
+# credential(s) - see README "Ship to a lean tenant"; the SIEM VM is then
+# optional.
 #
 # VLAN 10: 10.x.10.0/24 (where x = your Ludus range's second octet)
 #
@@ -28,11 +36,13 @@
 # If you rename a role or drop its `author`, update BOTH sides or this breaks
 # again silently.
 #
-# The SIEM box pulls the public open-core images from ghcr.io/nano-rs (no auth).
+# Lab ingest token: the same value is pinned on the SIEM (nano_lake_ingest_token)
+# and given to the aggregator (nano_ingest_token). Change both together.
 
 ludus:
   # =========================================================================
-  # SIEM Box - Full NanoSIEM stack (API, Search, ClickHouse, Postgres, Vector)
+  # SIEM Box - open-core nano lake (install.sh, lake profile): API, search,
+  # jobs, web, Vector 0.59 ingest, OCSF 1.9 object lake on RustFS
   # =========================================================================
   - vm_name: "{{ range_id }}-nanosiem"
     hostname: "{{ range_id }}-SIEM"
@@ -44,20 +54,26 @@ ludus:
     linux: true
     roles:
       - geerlingguy.docker
-      - NanoSIEM.nano_stack
+      - NanoSIEM.nano_lake
     role_vars:
       docker_users:
         - localuser
-      # Images default to ghcr.io/nano-rs/nano-*:latest (public, no auth).
-      # Pin a release by uncommenting:
-      # nanosiem_version: "v0.1.598"
+      # Source install.sh is cloned from. Must carry the lake profile; the
+      # role refuses a legacy (ClickHouse) checkout. See the role README note
+      # on NAN-3308 / NAN-3309 before relying on the public mirror.
+      # nano_lake_repo_url: "https://github.com/nano-rs/nano.git"
+      # nano_lake_branch: "main"
+      # nano_lake_version: "latest"
       #
       # --- Lab defaults (change for production) ---
-      nanosiem_dev_mode: "true"
-      nanosiem_vector_auth_token: "nanosiem-lab-token"
+      nano_lake_ingest_token: "nano-lab-range-ingest-token-change-me"
+      nano_lake_parsers:
+        - windows_event
+        - windows_sysmon
+        - conduit_proxy
 
   # =========================================================================
-  # Proxy / Aggregator - Vector aggregator + general proxy services
+  # Proxy / Aggregator - Vector aggregator (the range's shipper) + Conduit
   # =========================================================================
   - vm_name: "{{ range_id }}-proxy"
     hostname: "{{ range_id }}-PROXY"
@@ -74,10 +90,18 @@ ludus:
     role_vars:
       docker_users:
         - localuser
-      # Points to the SIEM box above (last octet 10)
+      # Ship to the SIEM box above (last octet 10) over Splunk HEC :8088.
+      nano_ingest_mode: hec
       nanosiem_siem_ip: "10.{{ range_second_octet }}.10.10"
-      nanosiem_siem_vector_port: 6000
-      nanosiem_vector_auth_token: "nanosiem-lab-token"
+      nano_ingest_token: "nano-lab-range-ingest-token-change-me"
+      #
+      # Lean tenant instead: drop nanosiem_siem_ip and set
+      # nano_ingest_url: "https://<tenant>.ingest.nano.rs"
+      # nano_ingest_token: "<collector credential>"      # and/or per source:
+      # nano_ingest_source_tokens:
+      #   windows_event: "<credential>"
+      #   windows_sysmon: "<credential>"
+      #   conduit_proxy: "<credential>"
       # Conduit proxy — pulls from ghcr.io/the2dl/conduit-{proxy,api}:latest
 
   # =========================================================================

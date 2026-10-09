@@ -39,6 +39,9 @@ conduit_log_level: "info"
 conduit_deploy_dir: /opt/conduit-proxy
 
 # ---- Vector aggregator (local on same box) ----
+# Sidecar image, pinned to the platform's Vector release (0.59) by digest
+# (NAN-3397; was a floating latest-alpine).
+conduit_vector_image: "timberio/vector:0.59.0-alpine@sha256:0e36bc2a290039e9b6a5e92f04bd2f133223506f72d09682c1df16c015172b7a"
 conduit_vector_aggregator_port: 9000
 
 # Disk buffer for the proxy's log lane, in bytes (512MB default)

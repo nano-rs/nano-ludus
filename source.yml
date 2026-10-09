@@ -3,7 +3,7 @@
 
 manifest_version: 1                                # required: schema version, leave as 1
 name: "nano SIEM"                                  # optional: display name in `ludus source list`
-description: "Active Directory lab with Windows Sysmon/EventLog collection shipped via Vector agent to a Vector aggregator and into the nano open-core SIEM stack (ClickHouse + Postgres), plus an optional Conduit MITM proxy."
+description: "Active Directory lab with Windows Sysmon/EventLog collection shipped via Vector 0.59 agents and an aggregator into an open-core nano lake (OCSF 1.9) or a hosted lean tenant, plus an optional Conduit MITM proxy."
 authors:                                           # optional: applies to every blueprint in this source
   - "nano-rs <https://nano.rs>"
 homepage: https://github.com/nano-rs/nano-ludus   # optional: falls back to the git URL

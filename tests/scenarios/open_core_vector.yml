@@ -1,0 +1,5 @@
+---
+# Open-core Vector-native :6000 (unauthenticated, lab only).
+render_parts: [aggregator]
+nano_ingest_mode: vector
+nanosiem_siem_ip: 10.5.10.10

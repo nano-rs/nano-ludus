@@ -1,15 +1,81 @@
 ---
 # Vector Aggregator Configuration
+#
+# The aggregator is the range's single shipper: Windows agents (and the Conduit
+# sidecar) send to it over the Vector protocol, and it forwards everything to
+# nano. NAN-3397 retargeted the forward hop at the current ingest model.
 
-# ---- Upstream SIEM target ----
-# IP of the SIEM box running the nanosiem_stack role
-nanosiem_siem_ip: ""  # REQUIRED - set in role_vars
+# ---- Where the range ships (NAN-3397) ----
+# nano_ingest_mode picks the wire protocol of the forward hop:
+#
+#   hec    (default) Splunk HEC with a bearer-style token. The only lane that
+#          works against BOTH targets:
+#            - an open-core lake install:  http://<siem-ip>:8088
+#              token = the install's VECTOR_AUTH_TOKEN
+#            - a hosted lean tenant:       https://<tenant>.ingest.nano.rs
+#              token = an ingest credential issued in Settings > Add data
+#   vector Vector-native protocol to <nanosiem_siem_ip>:<nanosiem_siem_vector_port>.
+#          Open-core only, and UNAUTHENTICATED: the :6000 source checks no
+#          token (NAN-3322). Lean tenants have no :6000 at all. Use it only on
+#          an isolated lab network.
+nano_ingest_mode: hec
 
-# Port the SIEM's Vector listens on for the Vector protocol
+# hec: the base URL of the HEC endpoint, without a path. Vector appends
+# /services/collector/event. Empty = derive http://<nanosiem_siem_ip>:8088,
+# which is the open-core install inside the range.
+nano_ingest_url: ""
+
+# hec: the default ingest token, used for every source that has no entry in
+# nano_ingest_source_tokens. On open-core this is the install token
+# (VECTOR_AUTH_TOKEN in the install's .env). On a lean tenant it is a
+# collector credential (one token, many sources). Leave empty when every
+# source has its own token below.
+nano_ingest_token: ""
+
+# hec: per-source tokens, keyed by source_type. A lean tenant's source
+# credential is bound to ONE source: sending another sourcetype with it is a
+# 403. Give each source the range ships its own token here, e.g.
+#   nano_ingest_source_tokens:
+#     windows_event: "<credential for windows_event>"
+#     windows_sysmon: "<credential for windows_sysmon>"
+#     conduit_proxy: "<credential for conduit_proxy>"
+# Sources without an entry use nano_ingest_token.
+nano_ingest_source_tokens: {}
+
+# hec: the source_types the aggregator forwards. Each gets its own HEC sink
+# (and disk buffer) with a literal sourcetype. Any other source_type is
+# dropped and counted (component nano_unrouted). Sources listed in
+# nano_ingest_source_tokens are added automatically.
+nano_ingest_sources:
+  - windows_event
+  - windows_sysmon
+  - conduit_proxy
+
+# hec: poll /services/collector/ack so an event only leaves the disk buffer
+# once nano has acknowledged it. "" = auto: on for https URLs (the lean Worker
+# serves /services/collector/ack), off for http (the open-core HEC source runs
+# with acknowledgements off and answers /ack with 400; Vector then falls back to
+# the initial 200 but logs an ERROR per batch). true/false force it.
+nano_ingest_indexer_acknowledgements: ""
+
+# hec: verify the endpoint's TLS certificate (https URLs only).
+nano_ingest_tls_verify: true
+
+# hec: request compression. Both targets accept gzip.
+nano_ingest_compression: gzip
+
+# ---- Legacy / vector-mode target ----
+# IP of the SIEM box in the range. In hec mode it only supplies the default
+# nano_ingest_url; in vector mode it is required.
+nanosiem_siem_ip: ""
+
+# Port the SIEM's Vector listens on for the Vector protocol (vector mode only).
 nanosiem_siem_vector_port: 6000
 
-# Auth token for the SIEM's HTTP ingestion endpoint
-nanosiem_vector_auth_token: "nanosiem-lab-token"
+# ---- Aggregator image ----
+# Pinned to the Vector release the platform runs (0.59, VRL 0.36), by digest.
+# The alpine flavour is required: the healthcheck uses busybox wget/awk.
+aggregator_vector_image: "timberio/vector:0.59.0-alpine@sha256:0e36bc2a290039e9b6a5e92f04bd2f133223506f72d09682c1df16c015172b7a"
 
 # ---- Aggregator listen ports ----
 # Port for Vector-to-Vector protocol (agents connect here)
@@ -19,7 +85,8 @@ aggregator_vector_port: 9000
 aggregator_deploy_dir: /opt/vector-aggregator
 
 # ---- Buffering ----
-# Disk buffer max size in bytes (1GB default)
+# Disk buffer max size in bytes, per forward sink (1GB default). In hec mode
+# there is one sink, and one buffer, per source in nano_ingest_sources.
 aggregator_buffer_max_bytes: 1073741824
 
 # What the aggregator does when that buffer fills (NAN-2364).
@@ -38,5 +105,5 @@ aggregator_buffer_when_full: drop_newest
 aggregator_health_buffer_pct: 90
 
 # ---- Processing ----
-# Add source_type enrichment for Windows events
+# Stamp aggregator_host / aggregator_timestamp on every forwarded event.
 aggregator_enrich_windows_events: true

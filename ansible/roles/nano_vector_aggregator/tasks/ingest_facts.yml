@@ -1,0 +1,50 @@
+---
+# Validate the forward-hop settings and derive the facts the config template
+# reads (NAN-3397). Split out so tests/render.yml can render the template with
+# exactly the role's own logic.
+- name: Validate nano_ingest_mode
+  ansible.builtin.assert:
+    that:
+      - nano_ingest_mode in ['hec', 'vector']
+    fail_msg: "nano_ingest_mode must be 'hec' or 'vector' (got: {{ nano_ingest_mode }})"
+    quiet: true
+
+- name: Validate vector-mode target
+  ansible.builtin.assert:
+    that:
+      - nanosiem_siem_ip | length > 0
+    fail_msg: "nano_ingest_mode=vector needs nanosiem_siem_ip (the open-core install's :6000)"
+    quiet: true
+  when: nano_ingest_mode == 'vector'
+
+- name: Derive the HEC endpoint
+  ansible.builtin.set_fact:
+    _nano_ingest_url: >-
+      {{ (nano_ingest_url | length > 0) | ternary(nano_ingest_url,
+          'http://' ~ nanosiem_siem_ip ~ ':8088') | regex_replace('/+$', '') }}
+  when: nano_ingest_mode == 'hec'
+
+- name: Derive the forwarded sources
+  ansible.builtin.set_fact:
+    _nano_ingest_sources: "{{ (nano_ingest_sources + (nano_ingest_source_tokens.keys() | list)) | unique | sort }}"
+  when: nano_ingest_mode == 'hec'
+
+- name: Validate hec-mode target and tokens
+  ansible.builtin.assert:
+    that:
+      - nano_ingest_url | length > 0 or nanosiem_siem_ip | length > 0
+      - _nano_ingest_url is match('^https?://[^/\s]+$')
+      - _nano_ingest_sources | length > 0
+      - _nano_ingest_sources | reject('match', '^[a-z][a-z0-9_]{0,62}$') | list | length == 0
+      - nano_ingest_token | length > 0 or (_nano_ingest_sources | difference(nano_ingest_source_tokens.keys() | list) | length == 0)
+      - nano_ingest_token is match('^[A-Za-z0-9._~+/=-]*$')
+      - nano_ingest_source_tokens.values() | reject('match', '^[A-Za-z0-9._~+/=-]+$') | list | length == 0
+    fail_msg: >-
+      nano_ingest_mode=hec needs nano_ingest_url (or nanosiem_siem_ip for an
+      in-range open-core SIEM) as scheme://host[:port] with no path, and a
+      token for every source in nano_ingest_sources (nano_ingest_token, or an
+      entry in nano_ingest_source_tokens). Sources must be lowercase
+      source_type slugs; tokens must be plain token characters.
+    quiet: true
+  no_log: true
+  when: nano_ingest_mode == 'hec'

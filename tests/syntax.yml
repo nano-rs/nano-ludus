@@ -1,0 +1,22 @@
+---
+# ansible-playbook --syntax-check target: every vendored role, as the
+# blueprint applies them (tests/check.sh).
+- name: SIEM box (open-core lake)
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - nano_lake
+
+- name: Proxy box
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - nano_vector_aggregator
+    - nano_conduit_proxy
+
+- name: Windows endpoints
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - nano_sysmon
+    - nano_vector_agent

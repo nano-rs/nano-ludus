@@ -37,18 +37,50 @@
     path: "{{ vector_install_dir }}\\bin\\vector.exe"
   register: vector_installed
 
+# NAN-3397: install when missing AND upgrade when the installed build is not
+# the pinned release (earlier versions of this role installed a nightly).
+- name: Read the installed Vector version
+  ansible.windows.win_command:
+    cmd: '"{{ vector_install_dir }}\bin\vector.exe" --version'
+  register: vector_installed_version
+  changed_when: false
+  failed_when: false
+  when: vector_installed.stat.exists
+
+- name: Decide whether to install Vector
+  ansible.builtin.set_fact:
+    vector_needs_install: >-
+      {{ not vector_installed.stat.exists
+         or ('vector ' ~ vector_version ~ ' ') not in (vector_installed_version.stdout | default('')) }}
+
 - name: Download Vector MSI
   ansible.windows.win_get_url:
     url: "{{ vector_msi_url }}"
-    dest: "{{ vector_config_dir }}\\vector-installer.msi"
-  when: not vector_installed.stat.exists
+    dest: "{{ vector_config_dir }}\\vector-{{ vector_version }}-x64.msi"
+    checksum: "{{ vector_msi_sha256 | default(omit, true) }}"
+    checksum_algorithm: sha256
+    # Go direct: on a re-deploy the Conduit MITM proxy is already the system
+    # proxy, and its CA does not cover this download's TLS check (NAN-1527).
+    use_proxy: false
+  register: vector_msi_download
+  retries: 3
+  delay: 10
+  until: vector_msi_download is succeeded
+  when: vector_needs_install
+
+- name: Stop the running agent before upgrading it
+  ansible.windows.win_service:
+    name: vector
+    state: stopped
+  failed_when: false
+  when: vector_needs_install and vector_installed.stat.exists
 
 - name: Install Vector
   ansible.windows.win_package:
-    path: "{{ vector_config_dir }}\\vector-installer.msi"
+    path: "{{ vector_config_dir }}\\vector-{{ vector_version }}-x64.msi"
     state: present
     arguments: /quiet /norestart
-  when: not vector_installed.stat.exists
+  when: vector_needs_install
 
 - name: Remove default Vector config (ships with MSI, conflicts with ours)
   ansible.windows.win_file:

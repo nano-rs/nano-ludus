@@ -45,7 +45,7 @@ if err == null {
 [sinks.aggregator]
 type = "vector"
 inputs = ["parse_conduit"]
-address = "172.17.0.1:{{ conduit_vector_aggregator_port }}"
+address = "http://172.17.0.1:{{ conduit_vector_aggregator_port }}"
 acknowledgements.enabled = true
 
 # NAN-2364: shed rather than block when the buffer fills. Blocking here stalls

@@ -1,0 +1,10 @@
+---
+# Hosted lean tenant: one source credential per source_type, no default token.
+render_parts: [aggregator]
+nano_ingest_mode: hec
+nano_ingest_url: https://acme.ingest.nano.rs
+nano_ingest_token: ""
+nano_ingest_source_tokens:
+  windows_event: TESTTOKEN-winevent-0123456789abcdef
+  windows_sysmon: TESTTOKEN-sysmon-0123456789abcdef
+  conduit_proxy: TESTTOKEN-conduit-0123456789abcdef

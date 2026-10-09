@@ -1,0 +1,7 @@
+---
+# In-range open-core lake SIEM, HEC with the install token (the blueprint default).
+render_parts: [aggregator, agent, conduit]
+nano_ingest_mode: hec
+nanosiem_siem_ip: 10.5.10.10
+nano_ingest_token: TESTTOKEN-opencore-0123456789abcdef
+vector_aggregator_ip: 10.5.10.11
