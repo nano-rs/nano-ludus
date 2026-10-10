@@ -1,5 +1,5 @@
 ---
-# In-range open-core lake SIEM, HEC with the install token (the blueprint default).
+# In-range open-core lean SIEM, HEC with the install token (the blueprint default).
 render_parts: [aggregator, agent, conduit]
 nano_ingest_mode: hec
 nanosiem_siem_ip: 10.5.10.10

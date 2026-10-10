@@ -7,8 +7,9 @@
 #
 # 1. ansible-lint over the roles and tests
 # 2. ansible-playbook --syntax-check over every role
-# 3. policy: the blueprint deploys no gen1 piece, every Vector is the pinned
-#    0.59 release, no token lands in a 0644 config
+# 3. policy: the blueprint deploys no gen1 piece, no role mentions the retired
+#    legacy (ClickHouse) or gen1 lake profiles, every Vector is the pinned 0.59
+#    release, no token lands in a 0644 config
 # 4. render every scenario's Vector configs with the roles' own templates
 # 5. `vector validate` each rendered config with the platform's Vector (0.59)
 set -euo pipefail
@@ -42,12 +43,13 @@ for ref in sorted(set(re.findall(r"^\s*-\s+(NanoSIEM\.[a-z_]+)\s*$", rc, re.M)))
     name = ref.split(".", 1)[1]
     if name not in vendored:
         errs.append(f"range-config uses {ref} but ansible/roles/{name} is not vendored")
-if "nano_stack" in vendored:
-    errs.append("ansible/roles/nano_stack (gen1 ClickHouse stack) is still a deployable role")
-if re.search(r"^\s*-\s+NanoSIEM\.nano_stack\s*$", rc, re.M):
-    errs.append("range-config still deploys the gen1 nano_stack")
-if not re.search(r"^\s*-\s+NanoSIEM\.nano_lake\s*$", rc, re.M):
-    errs.append("range-config does not deploy the open-core lake (NanoSIEM.nano_lake)")
+for gone in ("nano_stack", "nano_lake"):
+    if gone in vendored:
+        errs.append(f"ansible/roles/{gone} (gen1) is still a deployable role")
+    if re.search(rf"^\s*-\s+NanoSIEM\.{gone}\s*$", rc, re.M):
+        errs.append(f"range-config still deploys the gen1 {gone}")
+if not re.search(r"^\s*-\s+NanoSIEM\.nano_lean\s*$", rc, re.M):
+    errs.append("range-config does not deploy the open-core lean install (NanoSIEM.nano_lean)")
 for p in roles_dir.rglob("*"):
     if not p.is_file():
         continue
@@ -58,6 +60,10 @@ for p in roles_dir.rglob("*"):
             errs.append(f"{rel}: unpinned or non-0.59 Vector image {m.group(0)}")
     if re.search(r"vector/nightly|vector-nightly", t):
         errs.append(f"{rel}: installs a Vector nightly")
+    # ClickHouse (legacy profile) and the gen1 lake profile are gone from the
+    # product (NAN-3491); no role may configure or depend on them.
+    if re.search(r"clickhouse|COMPOSE_PROFILES=(legacy|lake)\b|NANO_ENABLE_LAKE_CONTROL_PLANE", t, re.I):
+        errs.append(f"{rel}: references ClickHouse or the gen1 lake profile")
 for e in errs:
     print("FAIL:", e)
 print("policy:", "ok" if not errs else f"{len(errs)} problem(s)")

@@ -10,7 +10,7 @@
 #
 #   hec    (default) Splunk HEC with a bearer-style token. The only lane that
 #          works against BOTH targets:
-#            - an open-core lake install:  http://<siem-ip>:8088
+#            - an open-core lean install:  http://<siem-ip>:8088
 #              token = the install's VECTOR_AUTH_TOKEN
 #            - a hosted lean tenant:       https://<tenant>.ingest.nano.rs
 #              token = an ingest credential issued in Settings > Add data

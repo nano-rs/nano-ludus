@@ -2,12 +2,13 @@
 #
 # Topology:
 #   [Win DC01]  ─┐  event logs ──► Vector agent ──┐
-#   [Win SRV01] ─┤  HTTP traffic ──► Conduit ───┤──► [Proxy/Aggregator] ──HEC──► [SIEM: open-core lake]
+#   [Win SRV01] ─┤  HTTP traffic ──► Conduit ───┤──► [Proxy/Aggregator] ──HEC──► [SIEM: open-core lean]
 #   [Win WS01]  ─┘  (MITM + CA trust)          │    (Vector 0.59 + Conduit)     (OCSF 1.9 on RustFS)
 #                                                └──► (Debian .10.11)              (Debian .10.10)
 #
-# NAN-3397: the SIEM box runs the open-core LAKE install (install.sh, lake
-# profile) instead of the retired gen1 ClickHouse stack, and the aggregator
+# NAN-3397 / NAN-3491: the SIEM box runs the open-core LEAN install
+# (install.sh, lean profile: one trusted-local lake cell) instead of the
+# retired gen1 stacks, and the aggregator
 # ships over authenticated Splunk HEC. To ship the range to a hosted lean
 # tenant instead (or as well), point the aggregator's nano_ingest_url at
 # https://<tenant>.ingest.nano.rs and give it that tenant's ingest
@@ -36,13 +37,13 @@
 # If you rename a role or drop its `author`, update BOTH sides or this breaks
 # again silently.
 #
-# Lab ingest token: the same value is pinned on the SIEM (nano_lake_ingest_token)
+# Lab ingest token: the same value is pinned on the SIEM (nano_lean_ingest_token)
 # and given to the aggregator (nano_ingest_token). Change both together.
 
 ludus:
   # =========================================================================
-  # SIEM Box - open-core nano lake (install.sh, lake profile): API, search,
-  # jobs, web, Vector 0.59 ingest, OCSF 1.9 object lake on RustFS
+  # SIEM Box - open-core nano lean (install.sh, lean profile): API, search,
+  # jobs, web, Vector 0.59 ingest, one lake cell, OCSF 1.9 on RustFS
   # =========================================================================
   - vm_name: "{{ range_id }}-nanosiem"
     hostname: "{{ range_id }}-SIEM"
@@ -54,20 +55,20 @@ ludus:
     linux: true
     roles:
       - geerlingguy.docker
-      - NanoSIEM.nano_lake
+      - NanoSIEM.nano_lean
     role_vars:
       docker_users:
         - localuser
-      # Source install.sh is cloned from. Must carry the lake profile; the
-      # role refuses a legacy (ClickHouse) checkout. See the role README note
-      # on NAN-3308 / NAN-3309 before relying on the public mirror.
-      # nano_lake_repo_url: "https://github.com/nano-rs/nano.git"
-      # nano_lake_branch: "main"
-      # nano_lake_version: "latest"
+      # Source and ref install.sh is cloned from. Must carry the lean profile
+      # (nanosiem #5924); the role refuses anything older. See the README
+      # note on NAN-3309 before relying on the public mirror.
+      # nano_lean_repo_url: "https://github.com/nano-rs/nano.git"
+      # nano_lean_ref: "main"            # branch or tag
+      # nano_lean_version: "latest"
       #
       # --- Lab defaults (change for production) ---
-      nano_lake_ingest_token: "nano-lab-range-ingest-token-change-me"
-      nano_lake_parsers:
+      nano_lean_ingest_token: "nano-lab-range-ingest-token-change-me"
+      nano_lean_parsers:
         - windows_event
         - windows_sysmon
         - conduit_proxy

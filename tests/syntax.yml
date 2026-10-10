@@ -1,11 +1,11 @@
 ---
 # ansible-playbook --syntax-check target: every vendored role, as the
 # blueprint applies them (tests/check.sh).
-- name: SIEM box (open-core lake)
+- name: SIEM box (open-core lean)
   hosts: localhost
   gather_facts: false
   roles:
-    - nano_lake
+    - nano_lean
 
 - name: Proxy box
   hosts: localhost

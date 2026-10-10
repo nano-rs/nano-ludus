@@ -1,8 +1,8 @@
 ---
 galaxy_info:
-  role_name: nano_lake
+  role_name: nano_lean
   author: NanoSIEM
-  description: Deploy an open-core nano lake install (install.sh, lake profile) as the range SIEM
+  description: Deploy the open-core nano lean install (install.sh, lean profile) as the range SIEM
   license: Apache-2.0
   min_ansible_version: "2.15"
   platforms:

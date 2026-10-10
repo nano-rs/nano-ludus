@@ -1,0 +1,94 @@
+---
+# nano open-core LEAN install on the range's SIEM box (NAN-3397, NAN-3491).
+#
+# Runs the product's own unattended installer (install.sh --non-interactive)
+# exactly as docs/deployment/open-lean-install.md documents a fresh install:
+# the `lean` compose profile (Postgres, Dragonfly, RustFS, one trusted-local
+# lake cell, lean OTLP/enrichment/jobs, Vector 0.59 ingest, nginx UI/API).
+# Not the retired `legacy` or gen1 `lake` profiles. Nothing about the stack is forked
+# here; the role only feeds install.sh its answers, pins the lab's ingest
+# token and opens the ingest ports.
+
+# ---- Source ----
+# Repository and ref install.sh clones and runs from (NANO_REPO_URL /
+# NANO_BRANCH). The ref is a branch or tag name (install.sh uses
+# `git clone --branch` / `git fetch origin <ref>`, so a bare commit SHA does
+# not work).
+#
+# The default (`main`) needs nanosiem #5924 (lean compose + installer) and
+# #5944 (retired `legacy` profile removed) merged and synced to the source
+# below. To test before that, point both at a checkout that carries #5924,
+# e.g. nano_lean_repo_url: <a nanosiem clone the SIEM box can read> and
+# nano_lean_ref: feat/NAN-3492-open-lean-compose.
+#
+# The role refuses a source without the lean profile (no `lean-init` service
+# in docker-compose.opensource.yml) rather than deploying a retired profile.
+# As of 2026-10-10 the public mirror nano-rs/nano is still a pre-lean snapshot
+# (NAN-3309) and ghcr.io/nano-rs/nano-lake-cell is not published yet, so a
+# deploy from the defaults stops at that check until both land.
+nano_lean_repo_url: "https://github.com/nano-rs/nano.git"
+nano_lean_ref: "main"
+# Image tag install.sh writes as NANO_VERSION (every first-party image,
+# including nano-lake-cell). install.sh verifies pulled digests against the
+# ref's images.lock unless nano_lean_install_env sets NANO_SKIP_IMAGE_VERIFY.
+nano_lean_version: "latest"
+
+# Where the role checks the source out (to read install.sh) and where
+# install.sh installs the stack (its own clone, .env, .nano-lean/ identity).
+nano_lean_src_dir: /opt/nano-src
+nano_lean_install_dir: /opt/nano
+# install.sh output (0600). Unattended install.sh output omits credentials;
+# the role still never echoes it, and greps failures out of it with secrets
+# filtered.
+nano_lean_install_log: /root/nano-lean-install.log
+# Written once install.sh succeeds. Kept outside the install checkout: an
+# untracked file there makes install.sh skip its git update on re-runs.
+nano_lean_install_marker: /root/.nano-lab-lean-installed
+
+# Extra environment for install.sh, e.g. {NANO_HEALTH_TIMEOUT_SECONDS: "2400"}.
+nano_lean_install_env: {}
+
+# install.sh is safe to re-run (it keeps .env and the lean tenant identity,
+# reuses the cell UUID and restarts the stack). By default the role runs it
+# until one run succeeds and leaves later deploys alone; set true to re-run it
+# on every deploy (upgrades, image re-pulls).
+nano_lean_rerun_install: false
+
+# ---- Admin account (install.sh posts /api/setup/initialize) ----
+nano_lean_base_url: "http://{{ ansible_default_ipv4.address }}"
+nano_lean_admin_email: "admin@lab.local"
+nano_lean_admin_name: "Lab Admin"
+# Empty = generated on the SIEM box on first run and kept in
+# nano_lean_admin_file (0600), so re-deploys (and the parser import) reuse it.
+nano_lean_admin_password: ""
+nano_lean_admin_file: /root/.nano-lab-admin
+
+# ---- Ingest token ----
+# install.sh generates VECTOR_AUTH_TOKEN, the bearer for HTTP :8080,
+# nginx /ingest/, HEC :8088 and OTLP :4318. Set this to pin it instead, so the
+# range's aggregator (nano_ingest_token) can be configured before the SIEM
+# exists. Empty = keep the generated one; read it from
+# {{ nano_lean_install_dir }}/.env on the SIEM box.
+nano_lean_ingest_token: ""
+
+# ---- Sizing ----
+# install.sh refuses a host with less than 12 GiB available to Docker
+# (whole GiB, rounded down); the lean initializer then sizes the cell from
+# host capacity. Fail before cloning anything on a box that is too small.
+# The blueprint gives the SIEM 16 GB.
+nano_lean_min_memory_mb: 12288
+
+# ---- Firewall ----
+# 80 nginx (UI, API, /ingest/) · 8080 HTTP JSON · 8088 HEC · 4318 OTLP/HTTP ·
+# 6000 Vector native (UNAUTHENTICATED - drop it from this list unless an
+# in-range aggregator uses nano_ingest_mode=vector).
+nano_lean_firewall_ports: [80, 8080, 8088, 4318, 6000]
+
+# ---- Parsers ----
+# OCSF parsers to deploy from the bundled parser repository after install, by
+# source_type. Open-core ships with only the OTLP parser live; without these
+# the range's events are stored raw. Empty list = deploy nothing.
+nano_lean_parsers:
+  - windows_event
+  - windows_sysmon
+  - conduit_proxy

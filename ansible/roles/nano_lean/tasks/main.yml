@@ -1,0 +1,262 @@
+---
+# nano open-core lean install (NAN-3397, NAN-3491). See defaults/main.yml.
+- name: Check the box is large enough for the lean profile
+  ansible.builtin.assert:
+    that:
+      - ansible_memtotal_mb | int >= nano_lean_min_memory_mb | int
+    fail_msg: >-
+      install.sh needs at least 12 GiB available to Docker; this box has
+      {{ ansible_memtotal_mb }} MB. Raise ram_gb in the range config.
+    quiet: true
+
+- name: Validate the pinned ingest token
+  ansible.builtin.assert:
+    that:
+      - nano_lean_ingest_token | length == 0 or nano_lean_ingest_token is match('^[A-Za-z0-9_-]{24,256}$')
+    fail_msg: "nano_lean_ingest_token must be 24-256 base64url characters (or empty to keep the generated one)"
+    quiet: true
+  no_log: true
+
+# install.sh requires docker, compose v2 (2.24+ for the lean profile), git,
+# openssl, curl and python3 (lean bootstrap validation).
+- name: Install installer prerequisites
+  ansible.builtin.apt:
+    name:
+      - git
+      - curl
+      - openssl
+      - ca-certificates
+      - python3
+      - docker-compose-plugin
+    state: present
+    update_cache: true
+
+- name: Check out the open-core source
+  ansible.builtin.git:
+    repo: "{{ nano_lean_repo_url }}"
+    dest: "{{ nano_lean_src_dir }}"
+    version: "{{ nano_lean_ref }}"
+    depth: 1
+    force: true
+  register: nano_lean_src
+  retries: 5
+  delay: 15
+  until: nano_lean_src is succeeded
+
+# Refuse a source without the lean profile instead of letting a pre-lean
+# install.sh deploy the gen1 lake or the retired legacy stack.
+- name: Read the source's compose file
+  ansible.builtin.slurp:
+    src: "{{ nano_lean_src_dir }}/docker-compose.opensource.yml"
+  register: nano_lean_compose
+
+- name: Require the lean profile
+  ansible.builtin.assert:
+    that:
+      - "'lean-init:' in (nano_lean_compose.content | b64decode)"
+      - "'lake-cell:' in (nano_lean_compose.content | b64decode)"
+    fail_msg: >-
+      {{ nano_lean_repo_url }}@{{ nano_lean_ref }} has no lean profile (no
+      lean-init / lake-cell services in docker-compose.opensource.yml). It
+      needs nanosiem #5924; the public mirror nano-rs/nano is still pre-lean
+      (NAN-3309). Point nano_lean_repo_url / nano_lean_ref at a source that
+      carries it.
+    quiet: true
+
+# The API requires upper, lower, digit and a special character; the random
+# part is base64 letters/digits, the fixed tail guarantees the rest.
+- name: Generate the admin password on first run
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail && umask 077 &&
+      printf 'email=%s\npassword=%s\nurl=%s\n'
+      '{{ nano_lean_admin_email }}'
+      "$(openssl rand -base64 30 | tr -d '/+=\n' | cut -c1-24)-Lab9"
+      '{{ nano_lean_base_url }}' > {{ nano_lean_admin_file }}
+    creates: "{{ nano_lean_admin_file }}"
+    executable: /bin/bash
+  when: nano_lean_admin_password | length == 0
+  no_log: true
+
+- name: Read the generated admin password
+  ansible.builtin.slurp:
+    src: "{{ nano_lean_admin_file }}"
+  register: nano_lean_admin_slurp
+  when: nano_lean_admin_password | length == 0
+  no_log: true
+
+- name: Adopt the admin password
+  ansible.builtin.set_fact:
+    _nano_lean_admin_password: >-
+      {{ nano_lean_admin_password if nano_lean_admin_password | length > 0 else
+         (nano_lean_admin_slurp.content | b64decode | regex_search('(?m)^password=(.*)$', '\1') | first) }}
+  no_log: true
+
+# Written after install.sh first succeeds. Until then every deploy re-runs
+# install.sh, which resumes a timed-out first boot (same .env, same lean
+# tenant UUID, admin created if still missing).
+- name: Check for a completed install
+  ansible.builtin.stat:
+    path: "{{ nano_lean_install_marker }}"
+  register: nano_lean_done
+
+- name: Decide whether to run install.sh
+  ansible.builtin.set_fact:
+    _nano_lean_run_install: "{{ not nano_lean_done.stat.exists or nano_lean_rerun_install | bool }}"
+
+# The documented fresh-install invocation (docs/deployment/open-lean-install.md):
+# install.sh --non-interactive with the admin and base URL in the environment.
+# NANO_FRESH_LEAN_CUTOVER is deliberately never set: on a box that already
+# holds a pre-lean install, install.sh refuses and the role fails instead of
+# silently cutting it over.
+- name: Assemble the installer's answers
+  ansible.builtin.set_fact:
+    _nano_lean_install_env:
+      NANO_NONINTERACTIVE: "1"
+      NANO_REPO_URL: "{{ nano_lean_repo_url }}"
+      NANO_BRANCH: "{{ nano_lean_ref }}"
+      NANO_VERSION: "{{ nano_lean_version }}"
+      NANO_INSTALL_DIR: "{{ nano_lean_install_dir }}"
+      NANO_BASE_URL: "{{ nano_lean_base_url }}"
+      NANO_ADMIN_EMAIL: "{{ nano_lean_admin_email }}"
+      NANO_ADMIN_NAME: "{{ nano_lean_admin_name }}"
+      NANO_ADMIN_PASSWORD: "{{ _nano_lean_admin_password }}"
+      # Serialized pulls spare the Ludus lab DNS forwarder (NAN-1230).
+      COMPOSE_PARALLEL_LIMIT: "1"
+  no_log: true
+  when: _nano_lean_run_install | bool
+
+# The log is created 0600 up front instead of running under umask 077: the
+# installer's checkout is bind-mounted into non-root containers, so a
+# restrictive umask breaks the stack (install.sh sets umask 022 itself).
+- name: Create the installer log (0600)
+  ansible.builtin.file:
+    path: "{{ nano_lean_install_log }}"
+    state: touch
+    mode: "0600"
+    modification_time: preserve
+    access_time: preserve
+  when: _nano_lean_run_install | bool
+
+- name: Run the open-core installer (lean profile)
+  ansible.builtin.shell:
+    cmd: >-
+      bash {{ nano_lean_src_dir }}/install.sh --non-interactive
+      < /dev/null >> {{ nano_lean_install_log }} 2>&1
+    chdir: /root
+    executable: /bin/bash
+  environment: "{{ nano_lean_install_env | combine(_nano_lean_install_env) }}"
+  register: nano_lean_install
+  changed_when: true
+  failed_when: false
+  no_log: true
+  when: _nano_lean_run_install | bool
+
+- name: Show why the installer stopped (secrets filtered)
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail &&
+      grep -v -i -E 'token|password|secret|key|bearer|splunk ' {{ nano_lean_install_log }}
+      | sed 's/\x1b\[[0-9;]*m//g' | tail -25
+    executable: /bin/bash
+  register: nano_lean_install_tail
+  changed_when: false
+  when: nano_lean_install.rc is defined and nano_lean_install.rc != 0
+
+- name: Fail on an installer error
+  ansible.builtin.fail:
+    msg: >-
+      install.sh exited {{ nano_lean_install.rc }}. Re-running the deploy is
+      safe (install.sh resumes with the same .env and tenant). Full log:
+      {{ nano_lean_install_log }} on this box. Last lines:
+      {{ nano_lean_install_tail.stdout }}
+  when: nano_lean_install.rc is defined and nano_lean_install.rc != 0
+
+- name: Record the completed install
+  ansible.builtin.file:
+    path: "{{ nano_lean_install_marker }}"
+    state: touch
+    mode: "0644"
+    modification_time: preserve
+    access_time: preserve
+  when: _nano_lean_run_install | bool
+
+# Pin the ingest token the range's shippers were configured with. The
+# handler's compose up recreates only the services that read VECTOR_AUTH_TOKEN.
+- name: Pin the ingest token
+  ansible.builtin.lineinfile:
+    path: "{{ nano_lean_install_dir }}/.env"
+    regexp: '^VECTOR_AUTH_TOKEN='
+    line: "VECTOR_AUTH_TOKEN={{ nano_lean_ingest_token }}"
+    mode: "0600"
+  no_log: true
+  when: nano_lean_ingest_token | length > 0
+  notify: Recreate nano lean services
+
+- name: Apply the pinned token now
+  ansible.builtin.meta: flush_handlers
+
+- name: Open the ingest and UI ports
+  ansible.builtin.iptables:
+    chain: INPUT
+    protocol: tcp
+    destination_port: "{{ item }}"
+    jump: ACCEPT
+    comment: "nano lean {{ item }}"
+  loop: "{{ nano_lean_firewall_ports }}"
+
+# Idempotent: starts whatever a reboot left stopped. COMPOSE_PROFILES=lean
+# and the tenant identity come from the .env install.sh wrote.
+- name: Ensure every lean service is up
+  ansible.builtin.command:
+    cmd: docker compose -f docker-compose.opensource.yml up -d
+    chdir: "{{ nano_lean_install_dir }}"
+  environment:
+    COMPOSE_PARALLEL_LIMIT: "1"
+  register: nano_lean_up
+  # One-shot init containers exit 0 and are "Started" again on every `up -d`;
+  # only a created/recreated service is a real change.
+  changed_when: nano_lean_up.stderr is search('\\b(Created|Recreated)\\b')
+  retries: 10
+  delay: 30
+  until: nano_lean_up.rc == 0
+
+- name: Wait for the API through nginx
+  ansible.builtin.uri:
+    url: "http://localhost/api/health"
+    status_code: 200
+  register: nano_lean_health
+  retries: 60
+  delay: 5
+  until: nano_lean_health.status == 200
+
+- name: Wait for the HEC lane
+  ansible.builtin.uri:
+    url: "http://localhost:8088/services/collector/health"
+    status_code: 200
+  register: nano_lean_hec
+  retries: 30
+  delay: 5
+  until: nano_lean_hec.status == 200
+
+- name: Deploy the range's OCSF parsers
+  ansible.builtin.include_tasks: parsers.yml
+  when: nano_lean_parsers | length > 0
+
+- name: Print access info
+  ansible.builtin.debug:
+    msg: |
+      ============================================
+      nano open-core (lean) is running
+      ============================================
+      UI / API:  {{ nano_lean_base_url }}
+      Admin:     {{ nano_lean_admin_email }} (password in {{ nano_lean_admin_file }} on this box)
+      Source:    {{ nano_lean_repo_url }}@{{ nano_lean_ref }} (images: {{ nano_lean_version }})
+      Ingest token: VECTOR_AUTH_TOKEN in {{ nano_lean_install_dir }}/.env{{ ' (pinned by nano_lean_ingest_token)' if nano_lean_ingest_token | length > 0 else '' }}
+        HEC:     http://{{ ansible_default_ipv4.address }}:8088/services/collector/event  (Authorization: Splunk <token>)
+        HTTP:    http://{{ ansible_default_ipv4.address }}:8080/  or  {{ nano_lean_base_url }}/ingest/  (Authorization: Bearer <token>)
+        OTLP:    http://{{ ansible_default_ipv4.address }}:4318/v1/logs  (Authorization: Bearer <token>)
+        Vector:  {{ ansible_default_ipv4.address }}:6000  (UNAUTHENTICATED)
+      Parsers deployed: {{ nano_lean_parsers | join(', ') if nano_lean_parsers | length > 0 else 'none' }}
+      Back up {{ nano_lean_install_dir }}/.nano-lean with the data volumes (tenant identity and keys).
+      ============================================

@@ -2,7 +2,7 @@
 
 A complete [nano](https://nano.rs) SIEM lab on [Ludus](https://ludus.cloud) in three commands:
 an Active Directory domain, Windows endpoints shipping **Sysmon + Event Logs** through
-**Vector 0.59** into an **open‑core nano lake** (OCSF 1.9 on RustFS) on the range — or straight
+**Vector 0.59** into an **open‑core nano lean install** (one trusted‑local lake cell, OCSF 1.9 on RustFS) on the range — or straight
 into a **hosted lean tenant** (`<tenant>.ingest.nano.rs`) — with an optional **Conduit** MITM proxy.
 
 ```
@@ -19,16 +19,18 @@ into a **hosted lean tenant** (`<tenant>.ingest.nano.rs`) — with an optional *
                   │  Splunk HEC :8088, token-authenticated, one sink per source
                   ▼                         (or https://<tenant>.ingest.nano.rs)
           ┌───────────────────────────────┐
-          │  SIEM / .10.10 (Debian 12)     │  open-core install.sh, lake profile:
-          │  nginx :80 → web · API · search │  OCSF 1.9 object lake on RustFS,
-          │  ingest :8080 :8088 :4318 :6000 │  Vector 0.59, Postgres
+          │  SIEM / .10.10 (Debian 12)     │  open-core install.sh, lean profile:
+          │  nginx :80 → web · API · search │  one lake cell, OCSF 1.9 on RustFS,
+          │  ingest :8080 :8088 :4318 :6000 │  Vector 0.59, Postgres, Dragonfly
           └───────────────────────────────┘
 ```
 
-> **NAN-3397 (Oct 2026):** the SIEM box used to run the retired gen1 stack (ClickHouse + UDM,
-> `nano_stack`). It now runs the open‑core **lake** install (`nano_lake`), the aggregator ships
-> over authenticated HEC instead of unauthenticated Vector‑native, and every Vector is pinned to
-> 0.59. `nano_stack` is quarantined under `legacy/` and is no longer packaged.
+> **NAN-3397 / NAN-3491 (Oct 2026):** the SIEM box used to run the retired gen1 stack
+> (`nano_stack`, ClickHouse + UDM). It now runs the open‑core **lean** install (`nano_lean`,
+> `install.sh --non-interactive`, compose profile `lean`); neither the retired `legacy`
+> (ClickHouse) nor the gen1 `lake` profile is used. The aggregator ships over authenticated HEC
+> instead of unauthenticated Vector‑native, and every Vector is pinned to 0.59. The old role is
+> gone from this repo (see git history / `main` before this change).
 
 ## Quick start
 
@@ -51,19 +53,19 @@ Then open **`http://10.<octet>.10.10`** over the Ludus WireGuard VPN (`<octet>` 
 second octet, from `ludus range list`) and log in as `admin@lab.local`; the generated password is
 in `/root/.nano-lab-admin` on the SIEM VM.
 
-> **Before you rely on step 2 — open-core availability.** `nano_lake` runs the product's own
-> `install.sh` from `nano_lake_repo_url` (default: the public mirror `nano-rs/nano`). As of
-> 2026‑10‑09 that mirror is still the legacy v0.1.703 ClickHouse snapshot (NAN‑3309) and the
-> `nano-lake-*` images are not public (NAN‑3308). The role refuses a source without the lake
-> profile rather than deploying gen1. Until both land, point `nano_lake_repo_url` at a
-> lake‑capable source, or skip the SIEM VM and ship the range to a lean tenant (below).
+> **Before you rely on step 2 — open-core availability.** `nano_lean` runs the product's own
+> `install.sh` from `nano_lean_repo_url` at `nano_lean_ref` (defaults: the public mirror
+> `nano-rs/nano`, `main`). The default needs nanosiem #5924 (lean installer + compose) and #5944
+> (legacy profile removed) merged and synced to that mirror, and
+> `ghcr.io/nano-rs/nano-lake-cell` published. As of 2026‑10‑10 the mirror is still pre‑lean
+> (NAN‑3309). The role refuses a source without the lean profile rather than deploying a retired
+> stack. Until then, point `nano_lean_repo_url` / `nano_lean_ref` at a source that carries #5924
+> (e.g. `nano_lean_ref: feat/NAN-3492-open-lean-compose`), or skip the SIEM VM and ship the range
+> to a hosted lean tenant (below).
 >
-> **Known blocker — open‑core + Windows data (NAN‑3401).** Every Windows/Sysmon event leaves
-> dotted residual keys under `unmapped` (`event_data.subject_user_sid`, …). The open‑core lake's
-> Iceberg bronze publisher cannot admit those columns ("Cannot add column with ambiguous name"),
-> and it retries the batch forever. Range events parse into the right OCSF classes, but nothing
-> after the first one becomes searchable until NAN‑3401 ships. Lean tenants are not affected
-> (NAN‑2998).
+> An existing pre‑lean SIEM VM (gen1 `nano_stack` or a gen1 lake install) is not cut over in
+> place: `install.sh` refuses a pre‑lean `.env`. Rebuild the SIEM VM (or run `install.sh` by hand
+> with `NANO_FRESH_LEAN_CUTOVER=1`, see the product's `docs/deployment/open-lean-install.md`).
 
 > Ludus also builds a router from `debian-11-x64-server-template` on every deploy — a standard
 > Ludus install already has it. If a deploy fails instantly saying that template doesn't exist,
@@ -76,13 +78,13 @@ A 5‑VM range on VLAN 10 (`10.<octet>.10.0/24`), all joined to `lab.local`:
 The whole nano app — web, API, search, `/ingest/` — is served through nginx on port 80.
 
 **Log flow:** Sysmon + Windows Event Logs → Vector agent on each Windows box → aggregator (`.11`)
-→ Splunk HEC → nano's Vector pipeline → OCSF parser → lake. The agent tags Sysmon events
+→ Splunk HEC → nano's Vector pipeline → OCSF parser → lake cell. The agent tags Sysmon events
 `source_type=windows_sysmon` and everything else `source_type=windows_event`, and flattens each
 event to JSON in `message`. The aggregator forwards each source on its own HEC sink with a literal
 `sourcetype`, so a lean tenant's per‑source credentials work unchanged.
 
-**Parsers:** open‑core ships with only the OTLP parser live. `nano_lake` imports the OCSF parsers
-named in `nano_lake_parsers` (default `windows_event`, `windows_sysmon`, `conduit_proxy`) from the
+**Parsers:** open‑core ships with only the OTLP parser live. `nano_lean` imports the OCSF parsers
+named in `nano_lean_parsers` (default `windows_event`, `windows_sysmon`, `conduit_proxy`) from the
 public [nano-rs/parsers](https://github.com/nano-rs/parsers) repository and deploys them, so range
 events are searchable as OCSF (`class_uid`, `process.cmd_line`, `user.name`, …) from the first
 event. Coverage today:
@@ -137,14 +139,14 @@ resolve at deploy time (NAN‑2358). Drop or change an `author` and you must upd
 
 | Role (as referenced in `range-config.yml`) | Purpose |
 |---|---|
-| `NanoSIEM.nano_lake` | Open‑core nano lake on the SIEM box (`install.sh`, lake profile) + OCSF parser deploy |
+| `NanoSIEM.nano_lean` | Open‑core nano lean install on the SIEM box (`install.sh`, lean profile) + OCSF parser deploy |
 | `NanoSIEM.nano_sysmon` | Sysmon (SwiftOnSecurity‑based config) on Windows |
 | `NanoSIEM.nano_vector_aggregator` | Vector aggregator on the proxy box: agent intake → nano (HEC, per‑source tokens) |
 | `NanoSIEM.nano_vector_agent` | Vector 0.59 agent on Windows (Event Log + Sysmon collection) |
 | `NanoSIEM.nano_conduit_proxy` | Conduit MITM proxy + CA trust for HTTP(S) traffic capture |
 
 **Checks:** `bash tests/check.sh` runs ansible‑lint, `ansible-playbook --syntax-check`, a policy
-check (no gen1 role deployed, every Vector pinned to 0.59 by digest, no token in a world‑readable
+check (no gen1 role deployed, no ClickHouse / gen1 lake profile referenced, every Vector pinned to 0.59 by digest, no token in a world‑readable
 config), and renders every scenario in `tests/scenarios/` with the roles' own templates and runs
 `vector validate` (0.59) on the result.
 
@@ -166,7 +168,7 @@ role_vars:
     - "Microsoft-Windows-Windows Defender/Operational"
 ```
 
-**Resource sizing** — adjust `ram_gb` / `cpus`. Minimums: SIEM 12 GB / 4 CPU (16/8 recommended) ·
+**Resource sizing** — adjust `ram_gb` / `cpus`. Minimums: SIEM 12 GiB visible to Docker / 4 CPU (16/8 recommended; `install.sh` refuses less than 12 GiB) ·
 aggregator 2 GB / 2 CPU · DC 4 GB / 2 CPU · workstation 4 GB / 2 CPU.
 
 **Buffering and backpressure** — every Vector hop (agent → aggregator → SIEM) writes to a disk
@@ -260,7 +262,7 @@ if (-not $loaded) { [gc]::Collect(); reg unload "HKU\$sid" | Out-Null }
 
 ### `docker compose pull` times out resolving a registry
 The Ludus lab DNS forwarder resolves fine at idle but can choke under a fully‑parallel image
-pull. The `nano_lake` / aggregator / conduit roles already **serialize the pull**
+pull. The `nano_lean` / aggregator / conduit roles already **serialize the pull**
 (`COMPOSE_PARALLEL_LIMIT=1`) and **retry** it, so this is mostly handled — if it still fails after
 the retries, just re‑run `ludus range deploy` (it resumes).
 

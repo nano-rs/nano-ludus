@@ -3,7 +3,7 @@
 manifest_version: 1                                                          # required: schema version, leave as 1
 id: nanosiem                                                                 # required: unique within this source; lowercase, dashes
 name: "nano SIEM"                                                            # required: display name
-description: "AD domain with Windows Sysmon/EventLog collection via Vector 0.59 into an open-core nano lake (OCSF) or a hosted lean tenant, plus an optional Conduit MITM proxy." # required
+description: "AD domain with Windows Sysmon/EventLog collection via Vector 0.59 into an open-core nano lean install (OCSF) or a hosted lean tenant, plus an optional Conduit MITM proxy." # required
 version: 0.2.0                                                               # required: your semver; bump on every release
 config: range-config.yml                                                    # required: path to the range config, relative to this file
 
