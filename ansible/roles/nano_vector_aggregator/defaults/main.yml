@@ -8,12 +8,12 @@
 # ---- Where the range ships (NAN-3397) ----
 # nano_ingest_mode picks the wire protocol of the forward hop:
 #
-#   hec    (default) Splunk HEC with a bearer-style token. The only lane that
-#          works against BOTH targets:
+#   hec    (default) HEC, one token per source. The only lane that works
+#          against BOTH targets:
 #            - an open-core lean install:  http://<siem-ip>:8088
-#              token = the install's VECTOR_AUTH_TOKEN
+#              tokens = issued by this role, one bound to each source
 #            - a hosted lean tenant:       https://<tenant>.ingest.nano.rs
-#              token = an ingest credential issued in Settings > Add data
+#              tokens = ingest credentials issued in Settings > Add data
 #   vector Vector-native protocol to <nanosiem_siem_ip>:<nanosiem_siem_vector_port>.
 #          Open-core only, and UNAUTHENTICATED: the :6000 source checks no
 #          token (NAN-3322). Lean tenants have no :6000 at all. Use it only on
@@ -25,31 +25,64 @@ nano_ingest_mode: hec
 # which is the open-core install inside the range.
 nano_ingest_url: ""
 
-# hec: the default ingest token, used for every source that has no entry in
-# nano_ingest_source_tokens. On open-core this is the install token
-# (VECTOR_AUTH_TOKEN in the install's .env). On a lean tenant it is a
-# collector credential (one token, many sources). Leave empty when every
-# source has its own token below.
-nano_ingest_token: ""
-
-# hec: per-source tokens, keyed by source_type. A lean tenant's source
-# credential is bound to ONE source: sending another sourcetype with it is a
-# 403. Give each source the range ships its own token here, e.g.
+# ---- Ingest tokens (NAN-3841, nano's NAN-3806 model) ----
+# nano decides the log source from the TOKEN alone: every ingest token is
+# bound to exactly one log source, and every event sent with it lands there,
+# whatever `sourcetype` it declares. An unbound token is refused with HTTP 401
+# and there is no multiplex token. So the aggregator sends each source_type
+# with its own token, bound to that source.
+#
+# Open-core in-range SIEM: the role issues those tokens itself over the nano
+# API (see "Token provisioning" below) and nothing here needs to be set.
+#
+# hec: per-source tokens, keyed by source_type. Set them to use tokens you
+# issued yourself (Ingestion > Credentials, or a hosted lean tenant's source
+# credentials), e.g.
 #   nano_ingest_source_tokens:
-#     windows_event: "<credential for windows_event>"
-#     windows_sysmon: "<credential for windows_sysmon>"
-#     conduit_proxy: "<credential for conduit_proxy>"
-# Sources without an entry use nano_ingest_token.
+#     windows_event: "<token bound to windows_event>"
+#     windows_sysmon: "<token bound to windows_sysmon>"
+#     conduit_proxy: "<token bound to conduit_proxy>"
+# On open-core, a given `nit_` token that is still unbound is bound to its
+# source_type's log source; one bound to a different source fails the deploy.
 nano_ingest_source_tokens: {}
 
+# hec: a shared fallback token for sources without an entry above. Only for a
+# hosted lean tenant's collector credential, or an open-core nano that predates
+# per-source tokens (its install token, VECTOR_AUTH_TOKEN in the install's
+# .env). A current open-core nano refuses one token for several sources.
+nano_ingest_token: ""
+
 # hec: the source_types the aggregator forwards. Each gets its own HEC sink
-# (and disk buffer) with a literal sourcetype. Any other source_type is
+# (and disk buffer) and its own token. Any other source_type is
 # dropped and counted (component nano_unrouted). Sources listed in
 # nano_ingest_source_tokens are added automatically.
 nano_ingest_sources:
   - windows_event
   - windows_sysmon
   - conduit_proxy
+
+# ---- Token provisioning (open-core nano) ----
+# The nano API the role issues per-source tokens from. Empty = derive
+# http://<nanosiem_siem_ip> when the range ships to its own SIEM (no
+# nano_ingest_url); a hosted lean tenant is never provisioned here.
+nano_api_url: ""
+# Credentials for that API, with the settings:system permission (an admin).
+# An API key (sent as X-API-Key) is preferred; otherwise the role logs in with
+# email + password. With none of them set, the role issues nothing and uses
+# nano_ingest_source_tokens / nano_ingest_token as given.
+nano_api_key: ""
+nano_api_email: "admin@lab.local"
+nano_api_password: ""
+# How long to wait for the SIEM's API and for each source's log source to exist
+# (the SIEM role deploys the parsers): retries x delay seconds.
+nano_api_wait_retries: 80
+nano_api_wait_delay: 15
+# Name prefix of the tokens the role issues (unique per issue, <= 100 chars).
+nano_ingest_token_name_prefix: "ludus-{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '-') | truncate(40, true, '') }}"
+
+# hec: after the aggregator starts, post one small marked event per source with
+# that source's token, and fail on a 401/403 with what to do about it.
+nano_ingest_verify_tokens: true
 
 # hec: poll /services/collector/ack so an event only leaves the disk buffer
 # once nano has acknowledged it. "" = auto: on for https URLs (the lean Worker

@@ -252,7 +252,8 @@
       UI / API:  {{ nano_lean_base_url }}
       Admin:     {{ nano_lean_admin_email }} (password in {{ nano_lean_admin_file }} on this box)
       Source:    {{ nano_lean_repo_url }}@{{ nano_lean_ref }} (images: {{ nano_lean_version }})
-      Ingest token: VECTOR_AUTH_TOKEN in {{ nano_lean_install_dir }}/.env{{ ' (pinned by nano_lean_ingest_token)' if nano_lean_ingest_token | length > 0 else '' }}
+      Ingest tokens: one per log source, each bound to it (Ingestion > Credentials). The token
+        decides the source; the range's aggregator issues its own. An unbound token gets 401.
         HEC:     http://{{ ansible_default_ipv4.address }}:8088/services/collector/event  (Authorization: Splunk <token>)
         HTTP:    http://{{ ansible_default_ipv4.address }}:8080/  or  {{ nano_lean_base_url }}/ingest/  (Authorization: Bearer <token>)
         OTLP:    http://{{ ansible_default_ipv4.address }}:4318/v1/logs  (Authorization: Bearer <token>)

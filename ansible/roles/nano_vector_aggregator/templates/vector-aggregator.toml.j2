@@ -5,7 +5,7 @@
 # forwards them to nano ({{ nano_ingest_mode }} mode).
 {% if nano_ingest_mode == 'hec' %}
 #
-# Forward hop: Splunk HEC to {{ _nano_ingest_url }}
+# Forward hop: HEC to {{ _nano_ingest_url }}, one token per source
 # Sources: {{ _nano_ingest_sources | join(', ') }}
 {% endif %}
 
@@ -69,9 +69,10 @@ when_full = "{{ aggregator_buffer_when_full }}"
 type = "splunk_hec_logs"
 inputs = ["by_source.{{ st }}"]
 endpoint = "{{ _nano_ingest_url }}"
-default_token = "SECRET[nano_ingest.{{ (st in nano_ingest_source_tokens) | ternary(st, 'default') }}]"
-# The routing key, as a literal: nano reads the envelope's sourcetype as
-# source_type, and a lean tenant checks it against the credential's source.
+default_token = "SECRET[nano_ingest.{{ (st in (_nano_ingest_tokens | default(nano_ingest_source_tokens))) | ternary(st, 'default') }}]"
+# The TOKEN decides the source (NAN-3806): nano lands every event sent with
+# it in the log source it is bound to. The sourcetype never routes; nano keeps
+# a differing one as claimed_source_type. It is sent as a literal for that.
 # (Vector 0.59 refuses an unconfined `{{ '{{' }} source_type {{ '}}' }}` template here.)
 sourcetype = "{{ st }}"
 host_key = "src_host"
@@ -103,7 +104,8 @@ acknowledgements.enabled = true
 {% else %}
 # =============================================================================
 # Route by source_type (NAN-3397): one HEC sink per source the range ships,
-# each with its own literal sourcetype and its own (or the default) token.
+# each with its own token, bound to that source (NAN-3841). The shared
+# `default` token is only a fallback for a nano that predates per-source tokens.
 # =============================================================================
 [transforms.by_source]
 type = "route"

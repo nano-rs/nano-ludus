@@ -42,6 +42,15 @@
     mode: "0644"
   notify: restart vector-aggregator
 
+# NAN-3841: on an open-core nano, issue (or bind) one token per source over
+# the nano API before the token files are written.
+- name: Issue the per-source ingest tokens
+  ansible.builtin.include_tasks: ingest_tokens.yml
+  vars:
+    _aggregator_secrets_dir: "{{ aggregator_deploy_dir }}/secrets"
+    _aggregator_state_file: "{{ aggregator_deploy_dir }}/ingest-credentials.json"
+  when: _nano_ingest_provision | default(false) | bool
+
 # The forward hop's credentials live here, not in vector.toml (NAN-3397).
 - name: Write the ingest tokens
   ansible.builtin.include_tasks: ingest_secrets.yml
@@ -117,10 +126,14 @@
   delay: 3
   until: health_check.status == 200
 
+- name: Check that nano accepts each source's token
+  ansible.builtin.include_tasks: verify_tokens.yml
+  when: nano_ingest_mode == 'hec' and nano_ingest_verify_tokens | bool
+
 - name: Describe the forward hop
   ansible.builtin.set_fact:
     _aggregator_target: >-
-      {% if nano_ingest_mode == 'hec' %}{{ _nano_ingest_url }} (Splunk HEC; sources {{ _nano_ingest_sources | join(', ') }}){%
+      {% if nano_ingest_mode == 'hec' %}{{ _nano_ingest_url }} (HEC, one token per source: {{ _nano_ingest_sources | join(', ') }}){%
       else %}{{ nanosiem_siem_ip }}:{{ nanosiem_siem_vector_port }} (Vector native, unauthenticated){% endif %}
 
 - name: Print aggregator info

@@ -1,0 +1,257 @@
+---
+# Issue (or bind) one ingest token per forwarded source on an open-core nano
+# (NAN-3841). nano >= nanosiem #6582 (NAN-3806) decides the log source from the
+# token alone: each token is bound to exactly one log source, an unbound token
+# gets HTTP 401, and `sourcetype` no longer routes. So every HEC sink needs a
+# token bound to its own source.
+#
+# API (nanosiem #6582):
+#   GET  /api/ingest-tokens                       {tokens, install_token, sources}
+#   POST /api/ingest-tokens                       {name, source_id} -> 201 {credential, token}
+#   POST /api/ingest-tokens/{credential_id}/bind  {source_id}
+#   POST /api/ingest-tokens/{credential_id}/revoke
+#
+# A nano that predates #6582 has no `sources` in that listing (or no route at
+# all): its install token + sourcetype is still the routing contract there, so
+# the role falls back to nano_ingest_token instead of refusing the range.
+#
+# Token values are never printed: every task that carries one is no_log.
+# The role keeps the credential ids it issued in ingest-credentials.json and
+# the values only in the 0600 token files ingest_secrets.yml writes.
+#
+# Inputs: _nano_api_url, _nano_ingest_sources, _aggregator_secrets_dir,
+# _aggregator_state_file (from main.yml / ingest_facts.yml).
+
+- name: Authenticate with the nano API key
+  ansible.builtin.set_fact:
+    _nano_api_headers:
+      X-API-Key: "{{ nano_api_key }}"
+  no_log: true
+  when: nano_api_key | length > 0
+
+- name: Log in to the nano API (waits for the SIEM to come up)
+  ansible.builtin.uri:
+    url: "{{ _nano_api_url }}/api/auth/login"
+    method: POST
+    body_format: json
+    body:
+      email: "{{ nano_api_email }}"
+      password: "{{ nano_api_password }}"
+    status_code: [200, 400, 401, 403, 404, 502, 503, 504, -1]
+  register: _nano_api_login
+  until: _nano_api_login.status in [200, 400, 401, 403]
+  retries: "{{ nano_api_wait_retries }}"
+  delay: "{{ nano_api_wait_delay }}"
+  failed_when: false
+  no_log: true
+  when: nano_api_key | length == 0
+
+- name: Fail on a rejected login
+  ansible.builtin.fail:
+    msg: >-
+      The nano API at {{ _nano_api_url }} rejected the login for
+      {{ nano_api_email }} (HTTP {{ _nano_api_login.status }}). Set nano_api_password to
+      the SIEM's admin password (nano_lean_admin_password), or nano_api_key to an
+      admin API key.
+  when: nano_api_key | length == 0 and _nano_api_login.status != 200
+
+- name: Authenticate with the login session
+  ansible.builtin.set_fact:
+    _nano_api_headers:
+      Authorization: "Bearer {{ _nano_api_login.json.tokens.access_token }}"
+  no_log: true
+  when: nano_api_key | length == 0
+
+- name: List ingest tokens and bindable sources (waits for every source's log source)
+  ansible.builtin.uri:
+    url: "{{ _nano_api_url }}/api/ingest-tokens"
+    headers: "{{ _nano_api_headers }}"
+    status_code: [200, 401, 403, 404, 502, 503, 504, -1]
+  register: _nano_token_list
+  # 404 / no `sources` = a nano that predates per-source tokens. Otherwise wait
+  # until every forwarded source has a log source to bind to.
+  until: >-
+    _nano_token_list.status in [401, 403, 404]
+    or (_nano_token_list.status == 200
+        and ('sources' not in _nano_token_list.json
+             or _nano_ingest_sources
+                | difference(_nano_token_list.json.sources | map(attribute='route_key') | list)
+                | length == 0))
+  retries: "{{ nano_api_wait_retries }}"
+  delay: "{{ nano_api_wait_delay }}"
+  failed_when: false
+  no_log: true
+
+- name: Fail when the API cannot be used
+  ansible.builtin.fail:
+    msg: >-
+      GET {{ _nano_api_url }}/api/ingest-tokens answered
+      {{ _nano_token_list.status }}{{ ' (' ~ _nano_token_list.msg ~ ')' if _nano_token_list.status == -1 else '' }}.
+      {{ 'The API credentials need the settings:system permission (an admin).'
+         if _nano_token_list.status in [401, 403] else 'Is the SIEM up?' }}
+  when: _nano_token_list.status not in [200, 404]
+
+- name: Note the ingest model
+  ansible.builtin.set_fact:
+    _nano_ingest_model: >-
+      {{ 'bound' if (_nano_token_list.status == 200 and 'sources' in _nano_token_list.json) else 'legacy' }}
+
+# ---- Pre-#6582 nano: shared install token + sourcetype routing ----
+- name: Fall back to the shared token on a nano that predates per-source tokens
+  when: _nano_ingest_model == 'legacy'
+  block:
+    - name: Require a fallback token
+      ansible.builtin.assert:
+        that:
+          - nano_ingest_token | length > 0
+            or (_nano_ingest_sources | difference(nano_ingest_source_tokens.keys() | list) | length == 0)
+        fail_msg: >-
+          This nano ({{ _nano_api_url }}) predates per-source ingest tokens (NAN-3806):
+          it has no token-to-source binding API. Set nano_ingest_token to its install
+          token (VECTOR_AUTH_TOKEN in the install's .env), or upgrade nano.
+        quiet: true
+      no_log: true
+
+    - name: Say which path the range uses
+      ansible.builtin.debug:
+        msg: >-
+          {{ _nano_api_url }} predates per-source ingest tokens (NAN-3806); shipping
+          with nano_ingest_token and sourcetype routing, as before. Upgrade nano to bind
+          one token per source.
+
+# ---- Current nano: one token bound to each source ----
+- name: Issue or bind one token per source
+  when: _nano_ingest_model == 'bound'
+  block:
+    - name: Read the credentials issued on earlier runs
+      ansible.builtin.slurp:
+        src: "{{ _aggregator_state_file }}"
+      register: _nano_token_state_raw
+      failed_when: false
+
+    - name: Find the token files already written
+      ansible.builtin.find:
+        paths: "{{ _aggregator_secrets_dir }}"
+        file_type: file
+      register: _nano_token_files
+
+    - name: Plan the tokens
+      ansible.builtin.set_fact:
+        _nano_token_plan: >-
+          {{ _nano_ingest_sources | nano_ingest_token_plan(
+               _nano_token_list.json,
+               nano_ingest_source_tokens,
+               (_nano_token_state_raw.content | b64decode | from_json) if (_nano_token_state_raw.content is defined) else {},
+               _nano_token_files.files | map(attribute='path') | map('basename') | list) }}
+      no_log: true
+
+    - name: Show the plan
+      ansible.builtin.debug:
+        msg: "{{ _nano_token_plan | map(attribute='source_type') | zip(_nano_token_plan | map(attribute='action')) | map('join', ': ') | list }}"
+
+    - name: Fail on a source that cannot get a bound token
+      ansible.builtin.fail:
+        msg: "{{ item.error }}"
+      loop: "{{ _nano_token_plan | selectattr('action', 'equalto', 'error') | list }}"
+      loop_control:
+        label: "{{ item.source_type }}"
+
+    - name: Bind the given unbound tokens to their sources
+      ansible.builtin.uri:
+        url: "{{ _nano_api_url }}/api/ingest-tokens/{{ item.credential_id }}/bind"
+        method: POST
+        headers: "{{ _nano_api_headers }}"
+        body_format: json
+        body:
+          source_id: "{{ item.source_id }}"
+        # 409 = already bound (a binding never changes); re-checked below.
+        status_code: [200, 409]
+      loop: "{{ _nano_token_plan | selectattr('action', 'equalto', 'bind') | list }}"
+      loop_control:
+        label: "{{ item.source_type }}"
+      changed_when: true
+      no_log: true
+
+    - name: Read the existing tokens being reused
+      ansible.builtin.slurp:
+        src: "{{ _aggregator_secrets_dir }}/{{ item.source_type }}"
+      loop: "{{ _nano_token_plan | selectattr('action', 'equalto', 'reuse') | list }}"
+      loop_control:
+        label: "{{ item.source_type }}"
+      register: _nano_token_reused
+      no_log: true
+
+    - name: Issue a token bound to each remaining source
+      ansible.builtin.uri:
+        url: "{{ _nano_api_url }}/api/ingest-tokens"
+        method: POST
+        headers: "{{ _nano_api_headers }}"
+        body_format: json
+        body:
+          name: "{{ (nano_ingest_token_name_prefix ~ '-' ~ item.source_type ~ '-' ~ now(utc=true).strftime('%Y%m%d%H%M%S'))[:100] }}"
+          source_id: "{{ item.source_id }}"
+        status_code: 201
+      loop: "{{ _nano_token_plan | selectattr('action', 'equalto', 'create') | list }}"
+      loop_control:
+        label: "{{ item.source_type }}"
+      register: _nano_token_created
+      changed_when: true
+      no_log: true
+
+    - name: Use the issued and reused tokens
+      ansible.builtin.set_fact:
+        _nano_ingest_tokens: >-
+          {{ _nano_ingest_tokens
+             | combine(dict(_nano_token_reused.results | map(attribute='item') | map(attribute='source_type')
+                            | zip(_nano_token_reused.results | map(attribute='content') | map('b64decode') | map('trim'))))
+             | combine(dict(_nano_token_created.results | map(attribute='item') | map(attribute='source_type')
+                            | zip(_nano_token_created.results | map(attribute='json') | map(attribute='token')))) }}
+        _nano_ingest_credentials: >-
+          {{ dict(_nano_token_plan | rejectattr('credential_id', 'none') | map(attribute='source_type')
+                  | zip(_nano_token_plan | rejectattr('credential_id', 'none') | map(attribute='credential_id')))
+             | combine(dict(_nano_token_created.results | map(attribute='item') | map(attribute='source_type')
+                            | zip(_nano_token_created.results | map(attribute='json') | map(attribute='credential')
+                                  | map(attribute='credential_id')))) }}
+      no_log: true
+
+    - name: Revoke the tokens the new ones replace
+      ansible.builtin.uri:
+        url: "{{ _nano_api_url }}/api/ingest-tokens/{{ item.revoke }}/revoke"
+        method: POST
+        headers: "{{ _nano_api_headers }}"
+        # 409 = already revoked.
+        status_code: [200, 409]
+      loop: "{{ _nano_token_plan | selectattr('action', 'equalto', 'create') | rejectattr('revoke', 'none') | list }}"
+      loop_control:
+        label: "{{ item.source_type }}"
+      changed_when: true
+      no_log: true
+
+    - name: Re-read the bindings
+      ansible.builtin.uri:
+        url: "{{ _nano_api_url }}/api/ingest-tokens"
+        headers: "{{ _nano_api_headers }}"
+      register: _nano_token_after
+      no_log: true
+
+    - name: Check every source's token is bound to that source
+      ansible.builtin.fail:
+        msg: >-
+          After provisioning, the token for {{ item.0 }} ({{ item.1 }}) is not an active
+          token bound to {{ item.0 }} on nano. Bindings never change: revoke it and
+          re-run the deploy so the role issues a new one.
+      loop: "{{ _nano_ingest_credentials | dictsort }}"
+      loop_control:
+        label: "{{ item.0 }}"
+      when: >-
+        _nano_token_after.json.tokens
+        | selectattr('credential_id', 'equalto', item.1)
+        | selectattr('state', 'equalto', 'active')
+        | selectattr('route_key', 'equalto', item.0)
+        | list | length == 0
+
+    - name: Record the issued credential ids (ids only, never the tokens)
+      ansible.builtin.copy:
+        content: "{{ _nano_ingest_credentials | to_nice_json }}\n"
+        dest: "{{ _aggregator_state_file }}"
+        mode: "0600"

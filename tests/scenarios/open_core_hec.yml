@@ -1,5 +1,6 @@
 ---
-# In-range open-core lean SIEM, HEC with the install token (the blueprint default).
+# In-range open-core lean SIEM that predates per-source tokens (NAN-3806):
+# HEC with the shared install token, the fallback path.
 render_parts: [aggregator, agent, conduit]
 nano_ingest_mode: hec
 nanosiem_siem_ip: 10.5.10.10

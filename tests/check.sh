@@ -9,9 +9,11 @@
 # 2. ansible-playbook --syntax-check over every role
 # 3. policy: the blueprint deploys no gen1 piece, no role mentions the retired
 #    legacy (ClickHouse) or gen1 lake profiles, every Vector is the pinned 0.59
-#    release, no token lands in a 0644 config
+#    release, no token lands in a 0644 config, nothing routes on a declared
+#    source type and the range shares no token across sources (NAN-3841)
 # 4. render every scenario's Vector configs with the roles' own templates
 # 5. `vector validate` each rendered config with the platform's Vector (0.59)
+# 6. per-source token provisioning against a mock nano API (tests/provision)
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -39,19 +41,23 @@ errs = []
 roles_dir = root / "ansible/roles"
 vendored = {p.name for p in roles_dir.iterdir() if p.is_dir()}
 rc = (root / "blueprints/nanosiem/range-config.yml").read_text()
-for ref in sorted(set(re.findall(r"^\s*-\s+(NanoSIEM\.[a-z_]+)\s*$", rc, re.M))):
+for ref in sorted(set(re.findall(r"^\s*-\s+(?:name:\s+)?(NanoSIEM\.[a-z_]+)\s*$", rc, re.M))):
     name = ref.split(".", 1)[1]
     if name not in vendored:
         errs.append(f"range-config uses {ref} but ansible/roles/{name} is not vendored")
 for gone in ("nano_stack", "nano_lake"):
     if gone in vendored:
         errs.append(f"ansible/roles/{gone} (gen1) is still a deployable role")
-    if re.search(rf"^\s*-\s+NanoSIEM\.{gone}\s*$", rc, re.M):
+    if re.search(rf"^\s*-\s+(?:name:\s+)?NanoSIEM\.{gone}\s*$", rc, re.M):
         errs.append(f"range-config still deploys the gen1 {gone}")
-if not re.search(r"^\s*-\s+NanoSIEM\.nano_lean\s*$", rc, re.M):
+if not re.search(r"^\s*-\s+(?:name:\s+)?NanoSIEM\.nano_lean\s*$", rc, re.M):
     errs.append("range-config does not deploy the open-core lean install (NanoSIEM.nano_lean)")
+# NAN-3841: nano binds each ingest token to one source (NAN-3806), so the
+# blueprint must not hand the aggregator one shared token for every source.
+if re.search(r"^\s+nano_ingest_token:", rc, re.M):
+    errs.append("range-config gives the aggregator a shared nano_ingest_token; nano binds each token to one source")
 for p in roles_dir.rglob("*"):
-    if not p.is_file():
+    if not p.is_file() or p.suffix == ".pyc":
         continue
     t = p.read_text(errors="ignore")
     rel = p.relative_to(root)
@@ -64,6 +70,9 @@ for p in roles_dir.rglob("*"):
     # product (NAN-3491); no role may configure or depend on them.
     if re.search(r"clickhouse|COMPOSE_PROFILES=(legacy|lake)\b|NANO_ENABLE_LAKE_CONTROL_PLANE", t, re.I):
         errs.append(f"{rel}: references ClickHouse or the gen1 lake profile")
+    # The token decides the source; a source-type header routes nothing.
+    if re.search(r"X-Source-Type", t, re.I):
+        errs.append(f"{rel}: sends X-Source-Type; nano routes on the token alone (NAN-3806)")
 for e in errs:
     print("FAIL:", e)
 print("policy:", "ok" if not errs else f"{len(errs)} problem(s)")
@@ -124,6 +133,9 @@ PY
         fi
     done
 done
+step "token provisioning (mock nano API)"
+bash "$ROOT/tests/provision/run.sh" < /dev/null || bad "token provisioning"
+
 if [[ -n "${KEEP_RENDERED:-}" ]]; then rm -rf "$KEEP_RENDERED"; cp -r "$OUT" "$KEEP_RENDERED"; echo "rendered configs kept in $KEEP_RENDERED"; fi
 
 echo

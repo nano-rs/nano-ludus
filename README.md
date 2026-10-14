@@ -16,7 +16,7 @@ into a **hosted lean tenant** (`<tenant>.ingest.nano.rs`) — with an optional *
           ┌────────────────┐
           │ PROXY / .10.11 │  Vector aggregator (the range's shipper) + Conduit
           └───────┬────────┘
-                  │  Splunk HEC :8088, token-authenticated, one sink per source
+                  │  HEC :8088, one sink and one bound token per source
                   ▼                         (or https://<tenant>.ingest.nano.rs)
           ┌───────────────────────────────┐
           │  SIEM / .10.10 (Debian 12)     │  open-core install.sh, lean profile:
@@ -78,10 +78,46 @@ A 5‑VM range on VLAN 10 (`10.<octet>.10.0/24`), all joined to `lab.local`:
 The whole nano app — web, API, search, `/ingest/` — is served through nginx on port 80.
 
 **Log flow:** Sysmon + Windows Event Logs → Vector agent on each Windows box → aggregator (`.11`)
-→ Splunk HEC → nano's Vector pipeline → OCSF parser → lake cell. The agent tags Sysmon events
+→ HEC → nano's Vector pipeline → OCSF parser → lake cell. The agent tags Sysmon events
 `source_type=windows_sysmon` and everything else `source_type=windows_event`, and flattens each
-event to JSON in `message`. The aggregator forwards each source on its own HEC sink with a literal
-`sourcetype`, so a lean tenant's per‑source credentials work unchanged.
+event to JSON in `message`. The aggregator forwards each source on its own HEC sink, **with its
+own ingest token**.
+
+## Ingest tokens: one per source (NAN-3841)
+
+nano binds every ingest token to exactly one log source, and the token alone decides where an
+event lands (nano NAN-3806). A `sourcetype` / `X-Source-Type` no longer routes anything; nano
+keeps a differing one only as `claimed_source_type`. An unbound token gets HTTP 401, and there is
+no token that covers several log types. So the aggregator ships `windows_event`,
+`windows_sysmon` and `conduit_proxy` with three tokens, each bound to its own source.
+
+On the in‑range open‑core SIEM, the aggregator role issues them itself. It waits for the SIEM's
+API and for each source's log source (the SIEM role deploys the parsers), logs in as the lab
+admin (`nano_api_email` / `nano_api_password`, or an admin API key in `nano_api_key`), and for
+each forwarded source:
+
+- reuses the token it issued on an earlier deploy, while that token is still active and bound to
+  the source (it keeps the credential ids in `/opt/vector-aggregator/ingest-credentials.json` and
+  the values only in the 0600 files under `secrets/`);
+- otherwise issues a new one, `POST /api/ingest-tokens {name, source_id}`, and revokes the token
+  it replaces;
+- uses a token you set in `nano_ingest_source_tokens` as given. If it is a nano‑issued `nit_`
+  token that is still unbound, it binds it (`POST /api/ingest-tokens/{credential_id}/bind`). If
+  it is bound to a different source, the deploy fails: bindings never change, so revoke it and
+  issue a new one.
+
+After the aggregator starts it posts one small marked event per source with that source's token
+(`nano_ingest_verify_tokens`, on by default). A 401 fails the deploy with what to do: bind the
+token in **Ingestion → Credentials → Bind**, or `POST /api/ingest-tokens/{credential_id}/bind`.
+
+**A nano that predates per‑source tokens** (no binding API: `GET /api/ingest-tokens` has no
+`sources`, or 404) still routes on the install token plus `sourcetype`. There the role falls back
+to `nano_ingest_token` (the install's `VECTOR_AUTH_TOKEN`) as before, and says so; without one it
+fails with "set nano_ingest_token … or upgrade nano".
+
+> An existing range whose SIEM generated its admin password keeps it (`/root/.nano-lab-admin` on
+> the SIEM). Set `nano_lean_admin_password` and `nano_api_password` to that value, or give the
+> aggregator an admin API key in `nano_api_key`.
 
 **Parsers:** open‑core ships with only the OTLP parser live. `nano_lean` imports the OCSF parsers
 named in `nano_lean_parsers` (default `windows_event`, `windows_sysmon`, `conduit_proxy`) from the
@@ -99,24 +135,25 @@ event. Coverage today:
 
 ## Ship to a lean tenant
 
-The aggregator's forward hop is just an endpoint plus token(s). Set, on the proxy VM:
+The aggregator's forward hop is just an endpoint plus token(s). The role issues no tokens on a
+hosted tenant; set, on the proxy VM:
 
 ```yaml
 role_vars:
   nano_ingest_mode: hec
   nano_ingest_url: "https://<tenant>.ingest.nano.rs"
-  # A collector credential covers every source...
-  nano_ingest_token: "<collector credential>"
-  # ...or give each source its own (a source credential is bound to one source_type):
+  # One credential per source (a source credential is bound to one source_type):
   nano_ingest_source_tokens:
     windows_event: "<credential>"
     windows_sysmon: "<credential>"
     conduit_proxy: "<credential>"
+  # Or a collector credential for the sources without their own:
+  # nano_ingest_token: "<collector credential>"
 ```
 
 Issue credentials in the tenant's **Settings → Add data** (protocol **HEC**). Each token is written
-as a 0600 file under `/opt/vector-aggregator/secrets/` (`default`, plus one per source with its own
-credential). Vector reads them through its `directory` secret backend (`SECRET[nano_ingest.<key>]`).
+as a 0600 file under `/opt/vector-aggregator/secrets/` (one per source, plus `default` for a
+shared fallback token). Vector reads them through its `directory` secret backend (`SECRET[nano_ingest.<key>]`).
 Tokens never go into `vector.toml`, and never into `${VAR}` env interpolation, which Vector ≥ 0.57
 no longer expands by default. HEC indexer acknowledgements are on automatically for `https://` URLs
 (lean) and off for the in‑range `http://` open‑core HEC, which runs with acks disabled.
@@ -147,8 +184,10 @@ resolve at deploy time (NAN‑2358). Drop or change an `author` and you must upd
 
 **Checks:** `bash tests/check.sh` runs ansible‑lint, `ansible-playbook --syntax-check`, a policy
 check (no gen1 role deployed, no ClickHouse / gen1 lake profile referenced, every Vector pinned to 0.59 by digest, no token in a world‑readable
-config), and renders every scenario in `tests/scenarios/` with the roles' own templates and runs
-`vector validate` (0.59) on the result.
+config, no `X-Source-Type`, no shared aggregator token in the blueprint), and renders every scenario in `tests/scenarios/` with the roles' own templates and runs
+`vector validate` (0.59) on the result. Then `tests/provision/run.sh` runs the aggregator's token
+tasks against a mock of nano's ingest‑token API (issue, reuse, rotate, bind, wrong source, missing
+source, 401, a pre‑NAN‑3806 nano, a rejected login) and checks no token value reaches the output.
 
 <details>
 <summary><b>Customize</b> — event channels, VM sizing, single‑box iteration</summary>

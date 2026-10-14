@@ -9,11 +9,17 @@
 # NAN-3397 / NAN-3491: the SIEM box runs the open-core LEAN install
 # (install.sh, lean profile: one trusted-local lake cell) instead of the
 # retired gen1 stacks, and the aggregator
-# ships over authenticated Splunk HEC. To ship the range to a hosted lean
+# ships over authenticated HEC. To ship the range to a hosted lean
 # tenant instead (or as well), point the aggregator's nano_ingest_url at
 # https://<tenant>.ingest.nano.rs and give it that tenant's ingest
 # credential(s) - see README "Ship to a lean tenant"; the SIEM VM is then
 # optional.
+#
+# NAN-3841: nano binds every ingest token to exactly one log source (NAN-3806)
+# and the token alone decides where an event lands. The aggregator therefore
+# ships each log type (windows_event, windows_sysmon, conduit_proxy) with its
+# own token, and issues those tokens itself over the SIEM's API once the SIEM
+# role has deployed the parsers.
 #
 # VLAN 10: 10.x.10.0/24 (where x = your Ludus range's second octet)
 #
@@ -37,8 +43,11 @@
 # If you rename a role or drop its `author`, update BOTH sides or this breaks
 # again silently.
 #
-# Lab ingest token: the same value is pinned on the SIEM (nano_lean_ingest_token)
-# and given to the aggregator (nano_ingest_token). Change both together.
+# Lab admin password: the same value is pinned on the SIEM
+# (nano_lean_admin_password) and given to the aggregator (nano_api_password),
+# which logs in with it to issue one ingest token per source. Change both
+# together (12+ characters, upper and lower case, a digit and a symbol), or
+# give the aggregator an admin API key (nano_api_key) instead.
 
 ludus:
   # =========================================================================
@@ -67,7 +76,11 @@ ludus:
       # nano_lean_version: "latest"
       #
       # --- Lab defaults (change for production) ---
-      nano_lean_ingest_token: "nano-lab-range-ingest-token-change-me"
+      nano_lean_admin_password: "Nano-Lab-Admin-Change-Me-1"
+      # The install token (VECTOR_AUTH_TOKEN) is no longer used by the range:
+      # the aggregator ships with one token per source. Pin it only for other
+      # senders of your own.
+      # nano_lean_ingest_token: "<24+ base64url characters>"
       nano_lean_parsers:
         - windows_event
         - windows_sysmon
@@ -86,20 +99,26 @@ ludus:
     linux: true
     roles:
       - geerlingguy.docker
-      - NanoSIEM.nano_vector_aggregator
+      # Runs after the SIEM's install and parser deploy: it issues the
+      # per-source ingest tokens over the SIEM's API (Ludus 2 depends_on).
+      - name: NanoSIEM.nano_vector_aggregator
+        depends_on:
+          - vm_name: "{{ range_id }}-nanosiem"
+            role: NanoSIEM.nano_lean
       - NanoSIEM.nano_conduit_proxy
     role_vars:
       docker_users:
         - localuser
-      # Ship to the SIEM box above (last octet 10) over Splunk HEC :8088.
+      # Ship to the SIEM box above (last octet 10) over HEC :8088, one token
+      # per source. The role issues them over http://<siem>/api, logged in as
+      # the lab admin (nano_api_email defaults to admin@lab.local).
       nano_ingest_mode: hec
       nanosiem_siem_ip: "10.{{ range_second_octet }}.10.10"
-      nano_ingest_token: "nano-lab-range-ingest-token-change-me"
+      nano_api_password: "Nano-Lab-Admin-Change-Me-1"
       #
-      # Lean tenant instead: drop nanosiem_siem_ip and set
+      # Lean tenant instead: drop nanosiem_siem_ip and nano_api_password, and set
       # nano_ingest_url: "https://<tenant>.ingest.nano.rs"
-      # nano_ingest_token: "<collector credential>"      # and/or per source:
-      # nano_ingest_source_tokens:
+      # nano_ingest_source_tokens:                         # one credential per source
       #   windows_event: "<credential>"
       #   windows_sysmon: "<credential>"
       #   conduit_proxy: "<credential>"
