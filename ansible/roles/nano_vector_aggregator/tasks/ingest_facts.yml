@@ -47,12 +47,48 @@
           | ternary('http://' ~ nanosiem_siem_ip, ''))) | regex_replace('/+$', '') }}
   when: nano_ingest_mode == 'hec'
 
+# NAN-3841: the in-range SIEM's admin password is random per range and kept on
+# the Ludus controller by nano_lean; it is never a committed default.
+- name: Look for the range's lab admin password on the controller
+  ansible.builtin.stat:
+    path: "{{ nano_lab_admin_password_file }}"
+  delegate_to: localhost
+  become: false
+  register: _nano_lab_admin_password_stat
+  when: >-
+    nano_ingest_mode == 'hec' and _nano_api_url | length > 0
+    and nano_api_key | length == 0 and nano_api_password | length == 0
+
+- name: Adopt the API password
+  ansible.builtin.set_fact:
+    _nano_api_password: >-
+      {{ nano_api_password if nano_api_password | length > 0 else
+         (lookup('ansible.builtin.file', nano_lab_admin_password_file) | trim)
+           if (_nano_lab_admin_password_stat.stat.exists | default(false)) else '' }}
+  no_log: true
+
 - name: Decide whether the role issues the tokens
   ansible.builtin.set_fact:
     _nano_ingest_provision: >-
       {{ nano_ingest_mode == 'hec' and _nano_api_url | length > 0
-         and (nano_api_key | length > 0 or (nano_api_email | length > 0 and nano_api_password | length > 0)) }}
+         and (nano_api_key | length > 0 or (nano_api_email | length > 0 and _nano_api_password | length > 0)) }}
   no_log: true
+
+# Said before the (no_log) catch-all below so the operator sees where the
+# generated password was expected. Names a path only, never a value.
+- name: Require the range's lab admin password (or an override)
+  ansible.builtin.fail:
+    msg: >-
+      The aggregator issues its ingest tokens over {{ _nano_api_url }} but has no
+      credentials for it: the range's generated lab admin password is not at
+      {{ nano_lab_admin_password_file }} on the Ludus controller (the SIEM's
+      nano_lean role writes it - deploy that role first), and neither
+      nano_api_password nor nano_api_key is set.
+  when: >-
+    nano_ingest_mode == 'hec' and _nano_api_url | length > 0
+    and nano_api_key | length == 0 and _nano_api_password | length == 0
+    and nano_ingest_token | length == 0
+    and (_nano_ingest_sources | difference(_nano_ingest_tokens.keys() | list) | length > 0)
 
 - name: Validate the token-provisioning API
   ansible.builtin.assert:
@@ -78,8 +114,10 @@
       in-range open-core SIEM) as scheme://host[:port] with no path, and a
       token for every source in nano_ingest_sources (an entry in
       nano_ingest_source_tokens, the fallback nano_ingest_token, or nano API
-      credentials so the role issues them: nano_api_key, or nano_api_email +
-      nano_api_password). Sources must be lowercase
+      credentials so the role issues them: nano_api_key, nano_api_email +
+      nano_api_password, or the range's generated lab admin password in
+      {{ nano_lab_admin_password_file }} on the controller, which the SIEM's
+      nano_lean role writes - deploy it first). Sources must be lowercase
       source_type slugs; tokens must be plain token characters.
     quiet: true
   no_log: true

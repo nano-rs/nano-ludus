@@ -36,7 +36,7 @@
     body_format: json
     body:
       email: "{{ nano_api_email }}"
-      password: "{{ nano_api_password }}"
+      password: "{{ _nano_api_password }}"
     status_code: [200, 400, 401, 403, 404, 502, 503, 504, -1]
   register: _nano_api_login
   until: _nano_api_login.status in [200, 400, 401, 403]
@@ -50,9 +50,10 @@
   ansible.builtin.fail:
     msg: >-
       The nano API at {{ _nano_api_url }} rejected the login for
-      {{ nano_api_email }} (HTTP {{ _nano_api_login.status }}). Set nano_api_password to
-      the SIEM's admin password (nano_lean_admin_password), or nano_api_key to an
-      admin API key.
+      {{ nano_api_email }} (HTTP {{ _nano_api_login.status }}). Check the range's lab admin
+      password in {{ nano_lab_admin_password_file }} on the controller matches the
+      SIEM's (/root/.nano-lab-admin there), or set nano_api_password / nano_api_key
+      (an admin API key).
   when: nano_api_key | length == 0 and _nano_api_login.status != 200
 
 - name: Authenticate with the login session

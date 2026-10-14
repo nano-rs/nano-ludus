@@ -70,9 +70,17 @@ nano_api_url: ""
 # An API key (sent as X-API-Key) is preferred; otherwise the role logs in with
 # email + password. With none of them set, the role issues nothing and uses
 # nano_ingest_source_tokens / nano_ingest_token as given.
+# nano_api_password empty (the default) = the range's generated lab admin
+# password from nano_lab_admin_password_file on the controller, when the range
+# ships to its own SIEM. Set nano_api_password / nano_api_key only to override.
 nano_api_key: ""
 nano_api_email: "admin@lab.local"
 nano_api_password: ""
+# The range's lab admin password lives on the Ludus controller, generated once
+# per range (random, 0600, never committed). nano_lean writes it; the
+# aggregator reads it to log in and issue the per-source ingest tokens.
+nano_lab_secrets_dir: "{{ lookup('ansible.builtin.env', 'HOME') }}/.nano-ludus/{{ range_id | default('range') }}"
+nano_lab_admin_password_file: "{{ nano_lab_secrets_dir }}/lab-admin-password"
 # How long to wait for the SIEM's API and for each source's log source to exist
 # (the SIEM role deploys the parsers): retries x delay seconds.
 nano_api_wait_retries: 80

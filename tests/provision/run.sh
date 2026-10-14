@@ -16,6 +16,8 @@ export ANSIBLE_NOCOLOR=1 ANSIBLE_DEPRECATION_WARNINGS=0 ANSIBLE_LOCALHOST_WARNIN
 
 fails=0
 PORT=""
+# Obviously fake, test-only: what nano_lean would have generated for the range.
+( umask 077; printf 'test-password\n' > "$TMP/lab-admin-password" )
 SOURCES='[{"source_id":"11111111-1111-4111-8111-111111111111","name":"Windows Event","source_type":"routed","route_key":"windows_event","enabled":true},
           {"source_id":"22222222-2222-4222-8222-222222222222","name":"Windows Sysmon","source_type":"routed","route_key":"windows_sysmon","enabled":true},
           {"source_id":"33333333-3333-4333-8333-333333333333","name":"Conduit","source_type":"splunk_hec","route_key":"conduit_proxy","enabled":true}]'
@@ -32,11 +34,13 @@ start_mock() { # <seed json>
 play() {
     local name=$1 dir=$2 expect=$3 want=${4:-} extra=${5:-'{}'}
     mkdir -p "$dir"
-    python3 -I - "$TMP/vars.json" "$PORT" "$extra" <<'PY'
+    python3 -I - "$TMP/vars.json" "$PORT" "$extra" "$TMP/lab-admin-password" <<'PY'
 import json, sys
 port = sys.argv[2]
 v = {"nano_ingest_mode": "hec", "nano_api_url": f"http://127.0.0.1:{port}",
-     "nano_ingest_url": f"http://127.0.0.1:{port}", "nano_api_password": "test-password",
+     "nano_ingest_url": f"http://127.0.0.1:{port}", "nano_api_password": "",
+     # The range's generated lab admin password, as nano_lean leaves it on the controller.
+     "nano_lab_admin_password_file": sys.argv[4],
      "nano_api_wait_retries": 1, "nano_api_wait_delay": 0, "inventory_hostname": "range-proxy"}
 v.update(json.loads(sys.argv[3]))
 json.dump(v, open(sys.argv[1], "w"))
@@ -61,7 +65,7 @@ log = open(sys.argv[2]).read()
 given = json.load(open(sys.argv[3]))
 values = [t["value"][12:] for t in state["tokens"]]
 values += [v[12:] if v.startswith("nit_") else v for v in given.get("nano_ingest_source_tokens", {}).values()]
-values += [given.get("nano_ingest_token", ""), given.get("nano_api_password", ""), given.get("nano_api_key", ""), "test-session"]
+values += [given.get("nano_ingest_token", ""), given.get("nano_api_password", ""), given.get("nano_api_key", ""), "test-session", "test-password"]
 leaked = [v for v in values if len(v) > 4 and v in log]
 sys.exit(1 if leaked else 0)
 PY
@@ -157,6 +161,10 @@ play pre-api "$TMP/preapi" ok "" '{"nano_ingest_token":"install-token-0123456789
 # 10. A wrong admin password fails with what to set.
 start_mock "{\"model\":\"bound\",\"sources\":$SOURCES,\"tokens\":[]}"
 play bad-login "$TMP/badlogin" fail "rejected the login" '{"nano_api_password":"nope"}' && echo "ok   bad-login"
+# 11. No generated password on the controller (the SIEM role never ran) and no override: fail
+#     and say where the password should be.
+play no-lab-password "$TMP/nolabpw" fail "generated lab admin password is not at" "{\"nano_lab_admin_password_file\":\"$TMP/does-not-exist\"}" && echo "ok   no-lab-password"
+
 for c in unbound-401 legacy-no-token; do echo "ok   $c (failed as expected)"; done
 
 echo

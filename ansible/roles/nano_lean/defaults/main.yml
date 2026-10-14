@@ -58,10 +58,17 @@ nano_lean_rerun_install: false
 nano_lean_base_url: "http://{{ ansible_default_ipv4.address }}"
 nano_lean_admin_email: "admin@lab.local"
 nano_lean_admin_name: "Lab Admin"
-# Empty = generated on the SIEM box on first run and kept in
-# nano_lean_admin_file (0600), so re-deploys (and the parser import) reuse it.
+# Empty (the default) = a random password generated once per range on the
+# Ludus controller (nano_lab_admin_password_file, 0600) and copied to
+# nano_lean_admin_file (0600) on this box. Re-deploys, the parser import and
+# the aggregator's token issuing all reuse it. Set it only to override.
 nano_lean_admin_password: ""
 nano_lean_admin_file: /root/.nano-lab-admin
+# The range's lab admin password lives on the Ludus controller, generated once
+# per range (random, 0600, never committed). nano_lean writes it; the
+# aggregator reads it to log in and issue the per-source ingest tokens.
+nano_lab_secrets_dir: "{{ lookup('ansible.builtin.env', 'HOME') }}/.nano-ludus/{{ range_id | default('range') }}"
+nano_lab_admin_password_file: "{{ nano_lab_secrets_dir }}/lab-admin-password"
 
 # ---- Ingest token ----
 # install.sh generates VECTOR_AUTH_TOKEN, the bearer for HTTP :8080,

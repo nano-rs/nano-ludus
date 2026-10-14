@@ -43,11 +43,13 @@
 # If you rename a role or drop its `author`, update BOTH sides or this breaks
 # again silently.
 #
-# Lab admin password: the same value is pinned on the SIEM
-# (nano_lean_admin_password) and given to the aggregator (nano_api_password),
-# which logs in with it to issue one ingest token per source. Change both
-# together (12+ characters, upper and lower case, a digit and a symbol), or
-# give the aggregator an admin API key (nano_api_key) instead.
+# Lab admin password: random per range, never in this file. The SIEM's
+# nano_lean role generates it once and keeps it on the Ludus controller
+# (~/.nano-ludus/<range_id>/lab-admin-password, 0600) and on the SIEM
+# (/root/.nano-lab-admin, 0600). The aggregator reads the controller copy to log
+# in and issue one ingest token per source. To override, set
+# nano_lean_admin_password and nano_api_password from a vault, or give the
+# aggregator an admin API key (nano_api_key).
 
 ludus:
   # =========================================================================
@@ -75,8 +77,9 @@ ludus:
       # nano_lean_ref: "main"            # branch or tag
       # nano_lean_version: "latest"
       #
-      # --- Lab defaults (change for production) ---
-      nano_lean_admin_password: "Nano-Lab-Admin-Change-Me-1"
+      # --- Lab defaults ---
+      # The admin password is generated per range (see the header); no
+      # nano_lean_admin_password here.
       # The install token (VECTOR_AUTH_TOKEN) is no longer used by the range:
       # the aggregator ships with one token per source. Pin it only for other
       # senders of your own.
@@ -111,12 +114,11 @@ ludus:
         - localuser
       # Ship to the SIEM box above (last octet 10) over HEC :8088, one token
       # per source. The role issues them over http://<siem>/api, logged in as
-      # the lab admin (nano_api_email defaults to admin@lab.local).
+      # the lab admin (admin@lab.local) with the range's generated password.
       nano_ingest_mode: hec
       nanosiem_siem_ip: "10.{{ range_second_octet }}.10.10"
-      nano_api_password: "Nano-Lab-Admin-Change-Me-1"
       #
-      # Lean tenant instead: drop nanosiem_siem_ip and nano_api_password, and set
+      # Lean tenant instead: drop nanosiem_siem_ip, and set
       # nano_ingest_url: "https://<tenant>.ingest.nano.rs"
       # nano_ingest_source_tokens:                         # one credential per source
       #   windows_event: "<credential>"

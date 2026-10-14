@@ -50,8 +50,9 @@ ludus range deploy
 ```
 
 Then open **`http://10.<octet>.10.10`** over the Ludus WireGuard VPN (`<octet>` = your range's
-second octet, from `ludus range list`) and log in as `admin@lab.local`; the generated password is
-in `/root/.nano-lab-admin` on the SIEM VM.
+second octet, from `ludus range list`) and log in as `admin@lab.local`. The password is random per
+range (never committed): it is in `~/.nano-ludus/<range_id>/lab-admin-password` (0600) on the Ludus
+controller and in `/root/.nano-lab-admin` (0600) on the SIEM VM.
 
 > **Before you rely on step 2 — open-core availability.** `nano_lean` runs the product's own
 > `install.sh` from `nano_lean_repo_url` at `nano_lean_ref` (defaults: the public mirror
@@ -93,8 +94,8 @@ no token that covers several log types. So the aggregator ships `windows_event`,
 
 On the in‑range open‑core SIEM, the aggregator role issues them itself. It waits for the SIEM's
 API and for each source's log source (the SIEM role deploys the parsers), logs in as the lab
-admin (`nano_api_email` / `nano_api_password`, or an admin API key in `nano_api_key`), and for
-each forwarded source:
+admin with the range's generated password (the controller copy the SIEM role wrote; override with
+`nano_api_password`, or give an admin API key in `nano_api_key`), and for each forwarded source:
 
 - reuses the token it issued on an earlier deploy, while that token is still active and bound to
   the source (it keeps the credential ids in `/opt/vector-aggregator/ingest-credentials.json` and
@@ -115,9 +116,10 @@ token in **Ingestion → Credentials → Bind**, or `POST /api/ingest-tokens/{cr
 to `nano_ingest_token` (the install's `VECTOR_AUTH_TOKEN`) as before, and says so; without one it
 fails with "set nano_ingest_token … or upgrade nano".
 
-> An existing range whose SIEM generated its admin password keeps it (`/root/.nano-lab-admin` on
-> the SIEM). Set `nano_lean_admin_password` and `nano_api_password` to that value, or give the
-> aggregator an admin API key in `nano_api_key`.
+> An existing range keeps its admin password: on the next deploy the SIEM role copies
+> `/root/.nano-lab-admin` from the SIEM to the controller, so the aggregator logs in with it. To
+> override, set `nano_lean_admin_password` and `nano_api_password` (from a vault, never a
+> committed value), or give the aggregator an admin API key in `nano_api_key`.
 
 **Parsers:** open‑core ships with only the OTLP parser live. `nano_lean` imports the OCSF parsers
 named in `nano_lean_parsers` (default `windows_event`, `windows_sysmon`, `conduit_proxy`) from the

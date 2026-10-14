@@ -56,6 +56,17 @@ if not re.search(r"^\s*-\s+(?:name:\s+)?NanoSIEM\.nano_lean\s*$", rc, re.M):
 # blueprint must not hand the aggregator one shared token for every source.
 if re.search(r"^\s+nano_ingest_token:", rc, re.M):
     errs.append("range-config gives the aggregator a shared nano_ingest_token; nano binds each token to one source")
+# NAN-3841: this repo is public. No committed admin password, API key or
+# ingest token may ship as a default: the lab admin password is generated per
+# range on the controller.
+secret_keys = r"(nano_lean_admin_password|nano_api_password|nano_api_key|nano_lean_ingest_token|nano_ingest_token)"
+for p in [root / "blueprints/nanosiem/range-config.yml", *roles_dir.glob("*/defaults/main.yml")]:
+    for m in re.finditer(rf"^\s*{secret_keys}:\s*(\S.*)$", p.read_text(), re.M):
+        if m.group(2).strip() not in ('""', "''"):
+            errs.append(f"{p.relative_to(root)}: {m.group(1)} has a committed value; secrets are generated or supplied, never defaults")
+for p in [root / "README.md", root / "blueprints/nanosiem/range-config.yml", *roles_dir.rglob("*")]:
+    if p.is_file() and re.search(r"change-?me", p.read_text(errors="ignore"), re.I):
+        errs.append(f"{p.relative_to(root)}: a placeholder credential (change-me) is committed")
 for p in roles_dir.rglob("*"):
     if not p.is_file() or p.suffix == ".pyc":
         continue

@@ -63,33 +63,70 @@
       carries it.
     quiet: true
 
-# The API requires upper, lower, digit and a special character; the random
-# part is base64 letters/digits, the fixed tail guarantees the rest.
-- name: Generate the admin password on first run
-  ansible.builtin.shell:
-    cmd: >-
-      set -o pipefail && umask 077 &&
-      printf 'email=%s\npassword=%s\nurl=%s\n'
-      '{{ nano_lean_admin_email }}'
-      "$(openssl rand -base64 30 | tr -d '/+=\n' | cut -c1-24)-Lab9"
-      '{{ nano_lean_base_url }}' > {{ nano_lean_admin_file }}
-    creates: "{{ nano_lean_admin_file }}"
-    executable: /bin/bash
+# NAN-3841: the lab admin password is random per range, never a committed
+# default. It lives on the Ludus controller (nano_lab_admin_password_file,
+# 0600) so the aggregator role on the proxy VM can log in with it, and on this
+# box in nano_lean_admin_file (0600). Precedence: nano_lean_admin_password (an
+# override) > this box's file (a range deployed before the controller copy
+# existed) > the controller's file > a new random one.
+- name: Check for an admin password on this box
+  ansible.builtin.stat:
+    path: "{{ nano_lean_admin_file }}"
+  register: _nano_lean_admin_box
   when: nano_lean_admin_password | length == 0
-  no_log: true
 
-- name: Read the generated admin password
+- name: Read this box's admin password
   ansible.builtin.slurp:
     src: "{{ nano_lean_admin_file }}"
-  register: nano_lean_admin_slurp
-  when: nano_lean_admin_password | length == 0
+  register: _nano_lean_admin_slurp
+  when: nano_lean_admin_password | length == 0 and _nano_lean_admin_box.stat.exists
   no_log: true
 
+- name: Check for the range's admin password on the controller
+  ansible.builtin.stat:
+    path: "{{ nano_lab_admin_password_file }}"
+  delegate_to: localhost
+  become: false
+  register: _nano_lean_admin_controller
+
+# The API requires upper, lower, digit and a special character; the random
+# part is 24 letters/digits, the fixed tail guarantees the rest.
 - name: Adopt the admin password
   ansible.builtin.set_fact:
     _nano_lean_admin_password: >-
       {{ nano_lean_admin_password if nano_lean_admin_password | length > 0 else
-         (nano_lean_admin_slurp.content | b64decode | regex_search('(?m)^password=(.*)$', '\1') | first) }}
+         (_nano_lean_admin_slurp.content | b64decode | regex_search('(?m)^password=(.*)$', '\1') | first)
+           if (_nano_lean_admin_box.stat.exists | default(false)) else
+         (lookup('ansible.builtin.file', nano_lab_admin_password_file) | trim)
+           if _nano_lean_admin_controller.stat.exists else
+         lookup('ansible.builtin.password', '/dev/null length=24 chars=ascii_letters,digits') ~ '-Lab9' }}
+  no_log: true
+
+- name: Create the range's secrets directory on the controller (0700)
+  ansible.builtin.file:
+    path: "{{ nano_lab_admin_password_file | dirname }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+
+- name: Share the admin password with the range's other roles (controller, 0600)
+  ansible.builtin.copy:
+    content: "{{ _nano_lean_admin_password }}\n"
+    dest: "{{ nano_lab_admin_password_file }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Keep the admin password on this box (0600)
+  ansible.builtin.copy:
+    content: |
+      email={{ nano_lean_admin_email }}
+      password={{ _nano_lean_admin_password }}
+      url={{ nano_lean_base_url }}
+    dest: "{{ nano_lean_admin_file }}"
+    mode: "0600"
   no_log: true
 
 # Written after install.sh first succeeds. Until then every deploy re-runs
