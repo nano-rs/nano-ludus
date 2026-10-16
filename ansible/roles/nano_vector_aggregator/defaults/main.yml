@@ -92,11 +92,8 @@ nano_ingest_token_name_prefix: "ludus-{{ inventory_hostname | regex_replace('[^A
 # that source's token, and fail on a 401/403 with what to do about it.
 nano_ingest_verify_tokens: true
 
-# hec: poll /services/collector/ack so an event only leaves the disk buffer
-# once nano has acknowledged it. "" = auto: on for https URLs (the lean Worker
-# serves /services/collector/ack), off for http (the open-core HEC source runs
-# with acknowledgements off and answers /ack with 400; Vector then falls back to
-# the initial 200 but logs an ERROR per batch). true/false force it.
+# HEC receipts are enabled on current open-core and hosted collector-v2.
+# Empty = enabled; false is only for an older endpoint without HEC ACK support.
 nano_ingest_indexer_acknowledgements: ""
 
 # hec: verify the endpoint's TLS certificate (https URLs only).

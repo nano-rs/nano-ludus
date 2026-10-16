@@ -21,7 +21,7 @@ into a **hosted lean tenant** (`<tenant>.ingest.nano.rs`) — with an optional *
           ┌───────────────────────────────┐
           │  SIEM / .10.10 (Debian 12)     │  open-core install.sh, lean profile:
           │  nginx :80 → web · API · search │  one lake cell, OCSF 1.9 on RustFS,
-          │  ingest :8080 :8088 :4318 :6000 │  Vector 0.59, Postgres, Dragonfly
+          │  ingest :8080 :8088 (raw ports local) │  Vector 0.59, Postgres, Dragonfly
           └───────────────────────────────┘
 ```
 
@@ -54,19 +54,13 @@ second octet, from `ludus range list`) and log in as `admin@lab.local`. The pass
 range (never committed): it is in `~/.nano-ludus/<range_id>/lab-admin-password` (0600) on the Ludus
 controller and in `/root/.nano-lab-admin` (0600) on the SIEM VM.
 
-> **Before you rely on step 2 — open-core availability.** `nano_lean` runs the product's own
-> `install.sh` from `nano_lean_repo_url` at `nano_lean_ref` (defaults: the public mirror
-> `nano-rs/nano`, `main`). The default needs nanosiem #5924 (lean installer + compose) and #5944
-> (legacy profile removed) merged and synced to that mirror, and
-> `ghcr.io/nano-rs/nano-lake-cell` published. As of 2026‑10‑10 the mirror is still pre‑lean
-> (NAN‑3309). The role refuses a source without the lean profile rather than deploying a retired
-> stack. Until then, point `nano_lean_repo_url` / `nano_lean_ref` at a source that carries #5924
-> (e.g. `nano_lean_ref: feat/NAN-3492-open-lean-compose`), or skip the SIEM VM and ship the range
-> to a hosted lean tenant (below).
->
-> An existing pre‑lean SIEM VM (gen1 `nano_stack` or a gen1 lake install) is not cut over in
-> place: `install.sh` refuses a pre‑lean `.env`. Rebuild the SIEM VM (or run `install.sh` by hand
-> with `NANO_FRESH_LEAN_CUTOVER=1`, see the product's `docs/deployment/open-lean-install.md`).
+> **Open-core v1.0.6.** The role runs the product's Bash installer from
+> `nano-rs/nano` `main`, with images pinned to `1.0.6` (configurable).
+> Manual fresh installs use `curl -fsSL https://get.nano.rs | bash`; `sh` is refused.
+> The optional `--tenzir` mode omits Vector and cannot receive this range's HEC
+> senders, so the range uses the default Vector mode.
+> Existing retired installs must be rebuilt into a fresh VM/directory. There is
+> no in-place upgrade from the retired storage engine, and no cutover override.
 
 > Ludus also builds a router from `debian-11-x64-server-template` on every deploy — a standard
 > Ludus install already has it. If a deploy fails instantly saying that template doesn't exist,
@@ -309,7 +303,7 @@ the retries, just re‑run `ludus range deploy` (it resumes).
 
 ### Search throws `crypto.randomUUID is not a function` in the browser
 `crypto.randomUUID` only exists in a **secure context**. Over plain `http://<ip>` it's undefined.
-Fixed in recent `nano-web` images — make sure you're on `:latest`. For real use, front the SIEM
+Fixed in recent `nano-web` images — use a current lean release. For real use, front the SIEM
 with **HTTPS** anyway (other browser security gates apply over plain HTTP).
 
 ### The deploy "keeps failing on the same box" after you fixed it

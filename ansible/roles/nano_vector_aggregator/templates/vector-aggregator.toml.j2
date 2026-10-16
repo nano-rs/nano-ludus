@@ -82,7 +82,7 @@ compression = "{{ nano_ingest_compression }}"
 # event JSON) as the message the OCSF parser reads.
 encoding.codec = "json"
 acknowledgements.enabled = true
-acknowledgements.indexer_acknowledgements_enabled = {{ ((nano_ingest_indexer_acknowledgements | string | length > 0) | ternary(nano_ingest_indexer_acknowledgements | bool, _nano_ingest_url is match('https://'))) | lower }}
+acknowledgements.indexer_acknowledgements_enabled = {{ ((nano_ingest_indexer_acknowledgements | string | length > 0) | ternary(nano_ingest_indexer_acknowledgements | bool, true)) | lower }}
 {% if _nano_ingest_url is match('https://') %}
 tls.verify_certificate = {{ nano_ingest_tls_verify | bool | lower }}
 {% endif %}

@@ -15,31 +15,20 @@
 # `git clone --branch` / `git fetch origin <ref>`, so a bare commit SHA does
 # not work).
 #
-# The default (`main`) needs nanosiem #5924 (lean compose + installer) and
-# #5944 (retired `legacy` profile removed) merged and synced to the source
-# below. To test before that, point both at a checkout that carries #5924,
-# e.g. nano_lean_repo_url: <a nanosiem clone the SIEM box can read> and
-# nano_lean_ref: feat/NAN-3492-open-lean-compose.
-#
-# The role refuses a source without the lean profile (no `lean-init` service
-# in docker-compose.opensource.yml) rather than deploying a retired profile.
-# As of 2026-10-10 the public mirror nano-rs/nano is still a pre-lean snapshot
-# (NAN-3309) and ghcr.io/nano-rs/nano-lake-cell is not published yet, so a
-# deploy from the defaults stops at that check until both land.
+# Use the public lean source; require lean services before running its installer.
 nano_lean_repo_url: "https://github.com/nano-rs/nano.git"
 nano_lean_ref: "main"
 # Image tag install.sh writes as NANO_VERSION (every first-party image,
 # including nano-lake-cell). install.sh verifies pulled digests against the
 # ref's images.lock unless nano_lean_install_env sets NANO_SKIP_IMAGE_VERIFY.
-nano_lean_version: "latest"
+nano_lean_version: "1.0.6"
 
 # Where the role checks the source out (to read install.sh) and where
 # install.sh installs the stack (its own clone, .env, .nano-lean/ identity).
 nano_lean_src_dir: /opt/nano-src
 nano_lean_install_dir: /opt/nano
 # install.sh output (0600). Unattended install.sh output omits credentials;
-# the role still never echoes it, and greps failures out of it with secrets
-# filtered.
+# the role never copies its content into Ansible output.
 nano_lean_install_log: /root/nano-lean-install.log
 # Written once install.sh succeeds. Kept outside the install checkout: an
 # untracked file there makes install.sh skip its git update on re-runs.
@@ -71,11 +60,8 @@ nano_lab_secrets_dir: "{{ lookup('ansible.builtin.env', 'HOME') }}/.nano-ludus/{
 nano_lab_admin_password_file: "{{ nano_lab_secrets_dir }}/lab-admin-password"
 
 # ---- Ingest token ----
-# install.sh generates VECTOR_AUTH_TOKEN, the bearer for HTTP :8080,
-# nginx /ingest/, HEC :8088 and OTLP :4318. Set this to pin it instead, so the
-# range's aggregator (nano_ingest_token) can be configured before the SIEM
-# exists. Empty = keep the generated one; read it from
-# {{ nano_lean_install_dir }}/.env on the SIEM box.
+# Optional install token override, used by nginx /otlp. Range senders use
+# separate source-bound tokens; this is never a shared range credential.
 nano_lean_ingest_token: ""
 
 # ---- Sizing ----
@@ -86,13 +72,11 @@ nano_lean_ingest_token: ""
 nano_lean_min_memory_mb: 12288
 
 # ---- Firewall ----
-# 80 nginx (UI, API, /ingest/) · 8080 HTTP JSON · 8088 HEC · 4318 OTLP/HTTP ·
-# 6000 Vector native (UNAUTHENTICATED - drop it from this list unless an
-# in-range aggregator uses nano_ingest_mode=vector).
-nano_lean_firewall_ports: [80, 8080, 8088, 4318, 6000]
+# Remote authenticated ingest only. Raw OTLP and Vector native stay loopback.
+nano_lean_firewall_ports: [80, 8080, 8088]
 
 # ---- Parsers ----
-# OCSF parsers to deploy from the bundled parser repository after install, by
+# OCSF parsers to deploy from the upstream main parser repository after install, by
 # source_type. Open-core ships with only the OTLP parser live; without these
 # the range's events are stored raw. Empty list = deploy nothing.
 nano_lean_parsers:

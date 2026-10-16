@@ -58,9 +58,8 @@
     fail_msg: >-
       {{ nano_lean_repo_url }}@{{ nano_lean_ref }} has no lean profile (no
       lean-init / lake-cell services in docker-compose.opensource.yml). It
-      needs nanosiem #5924; the public mirror nano-rs/nano is still pre-lean
-      (NAN-3309). Point nano_lean_repo_url / nano_lean_ref at a source that
-      carries it.
+      needs a current lean release. Point nano_lean_repo_url / nano_lean_ref
+      at a source that carries it.
     quiet: true
 
 # NAN-3841: the lab admin password is random per range, never a committed
@@ -178,8 +177,8 @@
 - name: Run the open-core installer (lean profile)
   ansible.builtin.shell:
     cmd: >-
-      bash {{ nano_lean_src_dir }}/install.sh --non-interactive
-      < /dev/null >> {{ nano_lean_install_log }} 2>&1
+      bash {{ (nano_lean_src_dir ~ "/install.sh") | quote }} --non-interactive
+      < /dev/null >> {{ nano_lean_install_log | quote }} 2>&1
     chdir: /root
     executable: /bin/bash
   environment: "{{ nano_lean_install_env | combine(_nano_lean_install_env) }}"
@@ -189,24 +188,12 @@
   no_log: true
   when: _nano_lean_run_install | bool
 
-- name: Show why the installer stopped (secrets filtered)
-  ansible.builtin.shell:
-    cmd: >-
-      set -o pipefail &&
-      grep -v -i -E 'token|password|secret|key|bearer|splunk ' {{ nano_lean_install_log }}
-      | sed 's/\x1b\[[0-9;]*m//g' | tail -25
-    executable: /bin/bash
-  register: nano_lean_install_tail
-  changed_when: false
-  when: nano_lean_install.rc is defined and nano_lean_install.rc != 0
-
 - name: Fail on an installer error
   ansible.builtin.fail:
     msg: >-
-      install.sh exited {{ nano_lean_install.rc }}. Re-running the deploy is
-      safe (install.sh resumes with the same .env and tenant). Full log:
-      {{ nano_lean_install_log }} on this box. Last lines:
-      {{ nano_lean_install_tail.stdout }}
+      install.sh exited {{ nano_lean_install.rc }}. Full private log:
+      {{ nano_lean_install_log }} on this box. Inspect it there; installer output
+      is never copied into Ansible output because it may contain credentials.
   when: nano_lean_install.rc is defined and nano_lean_install.rc != 0
 
 - name: Record the completed install
@@ -293,8 +280,8 @@
         decides the source; the range's aggregator issues its own. An unbound token gets 401.
         HEC:     http://{{ ansible_default_ipv4.address }}:8088/services/collector/event  (Authorization: Splunk <token>)
         HTTP:    http://{{ ansible_default_ipv4.address }}:8080/  or  {{ nano_lean_base_url }}/ingest/  (Authorization: Bearer <token>)
-        OTLP:    http://{{ ansible_default_ipv4.address }}:4318/v1/logs  (Authorization: Bearer <token>)
-        Vector:  {{ ansible_default_ipv4.address }}:6000  (UNAUTHENTICATED)
+        OTLP:    {{ nano_lean_base_url }}/otlp/v1/logs (install token only; separate from HEC/HTTP)
+        Raw OTLP :4317/:4318 and Vector :6000: loopback only, unauthenticated.
       Parsers deployed: {{ nano_lean_parsers | join(', ') if nano_lean_parsers | length > 0 else 'none' }}
       Back up {{ nano_lean_install_dir }}/.nano-lean with the data volumes (tenant identity and keys).
       ============================================
