@@ -59,12 +59,10 @@ ludus:
     role_vars:
       docker_users:
         - localuser
-      # Source and ref install.sh is cloned from. Must carry the lean profile
-      # (nanosiem #5924); the role refuses anything older. See the README
-      # note on NAN-3309 before relying on the public mirror.
+      # Current lean source; images pinned to the published open-core release.
       # nano_lean_repo_url: "https://github.com/nano-rs/nano.git"
-      # nano_lean_ref: "main"            # branch or tag
-      # nano_lean_version: "latest"
+      # nano_lean_ref: "main"
+      # nano_lean_version: "1.0.6"
       #
       # --- Lab defaults (change for production) ---
       nano_lean_ingest_token: "nano-lab-range-ingest-token-change-me"
