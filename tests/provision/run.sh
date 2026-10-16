@@ -145,18 +145,12 @@ assert "create" not in S["calls"], S["calls"]
 start_mock "{\"model\":\"bound\",\"sources\":$SOURCES,\"tokens\":[]}"
 play unbound-401 "$TMP/u401" fail "it is not bound to a log source" '{"nano_ingest_source_tokens":{"windows_event":"external-token-0123456789"}}'
 
-# 8. A nano that predates #6582 (no `sources`): the shared install token, as before.
-start_mock "{\"model\":\"legacy\",\"install_token\":\"install-token-0123456789\",\"sources\":[],\"tokens\":[]}"
-play legacy "$TMP/legacy" ok "" '{"nano_ingest_token":"install-token-0123456789"}' && check legacy '
-assert "create" not in S["calls"], S["calls"]
-assert secret("default") == "install-token-0123456789"
-assert len(S["events"]) == 3
-' "$TMP/legacy"
-play legacy-no-token "$TMP/legacy2" fail "predates per-source ingest tokens"
-
-# 9. No ingest-token API at all (404): same fallback.
-start_mock "{\"model\":\"missing\",\"install_token\":\"install-token-0123456789\",\"sources\":[],\"tokens\":[]}"
-play pre-api "$TMP/preapi" ok "" '{"nano_ingest_token":"install-token-0123456789"}' && echo "ok   pre-api"
+# Old APIs must fail closed, even with a shared install token supplied.
+start_mock "{\"model\":\"legacy\",\"sources\":[],\"tokens\":[]}"
+play legacy "$TMP/legacy" fail "predates per-source ingest tokens"
+start_mock "{\"model\":\"missing\",\"sources\":[],\"tokens\":[]}"
+play pre-api "$TMP/preapi" fail "predates per-source ingest tokens"
+play shared-token "$TMP/shared" fail "Every source requires its own bound token" '{"nano_ingest_token":"install-token-0123456789"}'
 
 # 10. A wrong admin password fails with what to set.
 start_mock "{\"model\":\"bound\",\"sources\":$SOURCES,\"tokens\":[]}"
@@ -165,7 +159,12 @@ play bad-login "$TMP/badlogin" fail "rejected the login" '{"nano_api_password":"
 #     and say where the password should be.
 play no-lab-password "$TMP/nolabpw" fail "generated lab admin password is not at" "{\"nano_lab_admin_password_file\":\"$TMP/does-not-exist\"}" && echo "ok   no-lab-password"
 
-for c in unbound-401 legacy-no-token; do echo "ok   $c (failed as expected)"; done
+# Current senders cannot bypass source authentication via native Vector or a reused credential.
+play raw-vector "$TMP/raw" fail "requires authenticated HEC" '{"nano_ingest_mode":"vector"}'
+play duplicated-token "$TMP/duplicate" fail "Each source must have a distinct token" \
+    '{"nano_ingest_source_tokens":{"windows_event":"same-test-credential-0123456789","windows_sysmon":"same-test-credential-0123456789"}}'
+
+for c in unbound-401 legacy pre-api shared-token raw-vector duplicated-token; do echo "ok   $c (failed as expected)"; done
 
 echo
 if (( fails > 0 )); then echo "provision: $fails failure(s)"; exit 1; fi

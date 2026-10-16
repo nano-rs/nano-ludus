@@ -1,7 +1,7 @@
 ---
 # Import and deploy the range's OCSF parsers from nano-rs/parsers (NAN-3397).
 # Same calls as Settings > Parser Repository in the UI. On open-core
-# the API syncs the repository's OCSF 1.9 content branch by itself.
+# the API syncs OCSF 1.9 content from upstream main.
 - name: Log in as the lab admin
   ansible.builtin.uri:
     url: "http://localhost/api/auth/login"

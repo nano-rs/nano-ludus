@@ -12,7 +12,7 @@
     url: "{{ _nano_ingest_url }}/services/collector/event"
     method: POST
     headers:
-      Authorization: "Splunk {{ (_nano_ingest_tokens | default(nano_ingest_source_tokens))[item] | default(nano_ingest_token) }}"
+      Authorization: "Splunk {{ (_nano_ingest_tokens | default(nano_ingest_source_tokens))[item] }}"
     body_format: json
     body:
       # The sourcetype is informational only: nano routes on the token and keeps
@@ -25,6 +25,9 @@
     status_code: [200, 201, 202, 400, 401, 403, 404, 413, 429, 500, 502, 503, 504, -1]
   loop: "{{ _nano_ingest_sources }}"
   register: _nano_token_checks
+  until: _nano_token_checks.status in [200, 201, 202]
+  retries: 5
+  delay: 2
   failed_when: false
   no_log: true
 

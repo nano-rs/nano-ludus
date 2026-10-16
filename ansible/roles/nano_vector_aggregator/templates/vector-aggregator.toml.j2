@@ -13,7 +13,7 @@ data_dir = "/var/lib/vector"
 {% if nano_ingest_mode == 'hec' %}
 
 # Ingest tokens are NOT in this file. Each is a 0600 file in secrets/ (one per
-# source with its own credential, plus `default`), read through Vector's
+# source), read through Vector's
 # directory secret backend. Not env-var interpolation: Vector >= 0.57 no longer expands
 # environment variables in config files unless told to "dangerously".
 [secret.nano_ingest]
@@ -69,7 +69,7 @@ when_full = "{{ aggregator_buffer_when_full }}"
 type = "splunk_hec_logs"
 inputs = ["by_source.{{ st }}"]
 endpoint = "{{ _nano_ingest_url }}"
-default_token = "SECRET[nano_ingest.{{ (st in (_nano_ingest_tokens | default(nano_ingest_source_tokens))) | ternary(st, 'default') }}]"
+default_token = "SECRET[nano_ingest.{{ st }}]"
 # The TOKEN decides the source (NAN-3806): nano lands every event sent with
 # it in the log source it is bound to. The sourcetype never routes; nano keeps
 # a differing one as claimed_source_type. It is sent as a literal for that.
@@ -77,10 +77,10 @@ default_token = "SECRET[nano_ingest.{{ (st in (_nano_ingest_tokens | default(nan
 sourcetype = "{{ st }}"
 host_key = "src_host"
 compression = "{{ nano_ingest_compression }}"
-# json: the whole event goes in the envelope's `event` object. nano lifts its
-# keys to the root and keeps `event.message` (the agent's flattened Windows
-# event JSON) as the message the OCSF parser reads.
-encoding.codec = "json"
+# Preserve the sender's raw message. Current nano HEC decodes object payloads
+# as JSON bytes; encoding the whole Vector event nests message a second time
+# and hides event_id/event_data from the OCSF parsers.
+encoding.codec = "text"
 acknowledgements.enabled = true
 acknowledgements.indexer_acknowledgements_enabled = {{ ((nano_ingest_indexer_acknowledgements | string | length > 0) | ternary(nano_ingest_indexer_acknowledgements | bool, true)) | lower }}
 {% if _nano_ingest_url is match('https://') %}
@@ -89,23 +89,9 @@ tls.verify_certificate = {{ nano_ingest_tls_verify | bool | lower }}
 
 {{ buffer('nano_hec_' ~ st) }}
 {% endmacro %}
-{% if nano_ingest_mode == 'vector' %}
-# =============================================================================
-# Sink: Vector protocol to the open-core install's :{{ nanosiem_siem_vector_port }}.
-# UNAUTHENTICATED (NAN-3322) - isolated lab networks only.
-# =============================================================================
-[sinks.siem]
-type = "vector"
-inputs = ["{{ _upstream }}"]
-address = "http://{{ nanosiem_siem_ip }}:{{ nanosiem_siem_vector_port }}"
-acknowledgements.enabled = true
-
-{{ buffer('siem') }}
-{% else %}
 # =============================================================================
 # Route by source_type (NAN-3397): one HEC sink per source the range ships,
-# each with its own token, bound to that source (NAN-3841). The shared
-# `default` token is only a fallback for a nano that predates per-source tokens.
+# each with its own token, bound to that source (NAN-3841).
 # =============================================================================
 [transforms.by_source]
 type = "route"
@@ -124,7 +110,6 @@ route.{{ st }} = '.source_type == "{{ st }}"'
 type = "blackhole"
 inputs = ["by_source._unmatched"]
 print_interval_secs = 0
-{% endif %}
 
 # =============================================================================
 # Metrics

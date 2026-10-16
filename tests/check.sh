@@ -144,6 +144,9 @@ PY
         fi
     done
 done
+step "HEC wire payloads and acknowledgements (loopback mock)"
+python3 "$ROOT/tests/hec_wire.py" || bad "HEC wire proof"
+
 step "token provisioning (mock nano API)"
 bash "$ROOT/tests/provision/run.sh" < /dev/null || bad "token provisioning"
 

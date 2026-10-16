@@ -76,7 +76,7 @@ nano_lean_min_memory_mb: 12288
 nano_lean_firewall_ports: [80, 8080, 8088]
 
 # ---- Parsers ----
-# OCSF parsers to deploy from the upstream main parser repository after install, by
+# OCSF parsers to sync from upstream main after install, by
 # source_type. Open-core ships with only the OTLP parser live; without these
 # the range's events are stored raw. Empty list = deploy nothing.
 nano_lean_parsers:

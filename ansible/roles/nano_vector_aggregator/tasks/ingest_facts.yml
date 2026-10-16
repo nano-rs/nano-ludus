@@ -5,17 +5,19 @@
 - name: Validate nano_ingest_mode
   ansible.builtin.assert:
     that:
-      - nano_ingest_mode in ['hec', 'vector']
-    fail_msg: "nano_ingest_mode must be 'hec' or 'vector' (got: {{ nano_ingest_mode }})"
+      - nano_ingest_mode == 'hec'
+    fail_msg: "The range requires authenticated HEC; raw Vector is loopback-only and has no source-bound authentication."
     quiet: true
 
-- name: Validate vector-mode target
-  ansible.builtin.assert:
-    that:
-      - nanosiem_siem_ip | length > 0
-    fail_msg: "nano_ingest_mode=vector needs nanosiem_siem_ip (the open-core install's :6000)"
-    quiet: true
-  when: nano_ingest_mode == 'vector'
+- name: Refuse shared credentials
+  ansible.builtin.fail:
+    msg: Every source requires its own bound token; nano_ingest_token must be empty.
+  when: nano_ingest_token | length > 0
+
+- name: Refuse duplicate per-source credentials
+  ansible.builtin.fail:
+    msg: Each source must have a distinct token bound to that source.
+  when: nano_ingest_source_tokens.values() | unique | length != nano_ingest_source_tokens | length
 
 - name: Derive the HEC endpoint
   ansible.builtin.set_fact:
@@ -87,7 +89,6 @@
   when: >-
     nano_ingest_mode == 'hec' and _nano_api_url | length > 0
     and nano_api_key | length == 0 and _nano_api_password | length == 0
-    and nano_ingest_token | length == 0
     and (_nano_ingest_sources | difference(_nano_ingest_tokens.keys() | list) | length > 0)
 
 - name: Validate the token-provisioning API
@@ -105,15 +106,16 @@
       - _nano_ingest_url is match('^https?://[^/\s]+$')
       - _nano_ingest_sources | length > 0
       - _nano_ingest_sources | reject('match', '^[a-z][a-z0-9_]{0,62}$') | list | length == 0
-      - (_nano_ingest_provision | bool) or nano_ingest_token | length > 0
+      - (_nano_ingest_provision | bool)
         or (_nano_ingest_sources | difference(nano_ingest_source_tokens.keys() | list) | length == 0)
-      - nano_ingest_token is match('^[A-Za-z0-9._~+/=-]*$')
+      - nano_ingest_token | length == 0
+      - nano_ingest_source_tokens.values() | unique | length == nano_ingest_source_tokens | length
       - nano_ingest_source_tokens.values() | reject('match', '^[A-Za-z0-9._~+/=-]+$') | list | length == 0
     fail_msg: >-
       nano_ingest_mode=hec needs nano_ingest_url (or nanosiem_siem_ip for an
       in-range open-core SIEM) as scheme://host[:port] with no path, and a
       token for every source in nano_ingest_sources (an entry in
-      nano_ingest_source_tokens, the fallback nano_ingest_token, or nano API
+      nano_ingest_source_tokens, or nano API
       credentials so the role issues them: nano_api_key, nano_api_email +
       nano_api_password, or the range's generated lab admin password in
       {{ nano_lab_admin_password_file }} on the controller, which the SIEM's

@@ -61,7 +61,7 @@
   ansible.builtin.debug:
     msg: "ingest tokens changed"
   changed_when: true
-  when: _aggregator_secret_writes is changed or _aggregator_secret_removals is changed
+  when: _aggregator_secret_writes is changed or _aggregator_secret_removals is changed or _nano_token_persisted is changed
   notify: restart vector-aggregator
 
 - name: Template aggregator container healthcheck

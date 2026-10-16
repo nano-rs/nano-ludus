@@ -14,10 +14,7 @@
 #              tokens = issued by this role, one bound to each source
 #            - a hosted lean tenant:       https://<tenant>.ingest.nano.rs
 #              tokens = ingest credentials issued in Settings > Add data
-#   vector Vector-native protocol to <nanosiem_siem_ip>:<nanosiem_siem_vector_port>.
-#          Open-core only, and UNAUTHENTICATED: the :6000 source checks no
-#          token (NAN-3322). Lean tenants have no :6000 at all. Use it only on
-#          an isolated lab network.
+# Raw Vector is unauthenticated and loopback-only; this role supports HEC only.
 nano_ingest_mode: hec
 
 # hec: the base URL of the HEC endpoint, without a path. Vector appends
@@ -46,10 +43,7 @@ nano_ingest_url: ""
 # source_type's log source; one bound to a different source fails the deploy.
 nano_ingest_source_tokens: {}
 
-# hec: a shared fallback token for sources without an entry above. Only for a
-# hosted lean tenant's collector credential, or an open-core nano that predates
-# per-source tokens (its install token, VECTOR_AUTH_TOKEN in the install's
-# .env). A current open-core nano refuses one token for several sources.
+# Deprecated: must remain empty. Every source needs its own bound token.
 nano_ingest_token: ""
 
 # hec: the source_types the aggregator forwards. Each gets its own HEC sink
@@ -69,7 +63,7 @@ nano_api_url: ""
 # Credentials for that API, with the settings:system permission (an admin).
 # An API key (sent as X-API-Key) is preferred; otherwise the role logs in with
 # email + password. With none of them set, the role issues nothing and uses
-# nano_ingest_source_tokens / nano_ingest_token as given.
+# nano_ingest_source_tokens as given.
 # nano_api_password empty (the default) = the range's generated lab admin
 # password from nano_lab_admin_password_file on the controller, when the range
 # ships to its own SIEM. Set nano_api_password / nano_api_key only to override.
@@ -102,13 +96,9 @@ nano_ingest_tls_verify: true
 # hec: request compression. Both targets accept gzip.
 nano_ingest_compression: gzip
 
-# ---- Legacy / vector-mode target ----
-# IP of the SIEM box in the range. In hec mode it only supplies the default
-# nano_ingest_url; in vector mode it is required.
+# ---- In-range target ----
+# IP of the SIEM box; supplies the default HEC and administration API URLs.
 nanosiem_siem_ip: ""
-
-# Port the SIEM's Vector listens on for the Vector protocol (vector mode only).
-nanosiem_siem_vector_port: 6000
 
 # ---- Aggregator image ----
 # Pinned to the Vector release the platform runs (0.59, VRL 0.36), by digest.

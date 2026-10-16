@@ -73,7 +73,7 @@ A 5‑VM range on VLAN 10 (`10.<octet>.10.0/24`), all joined to `lab.local`:
 The whole nano app — web, API, search, `/ingest/` — is served through nginx on port 80.
 
 **Log flow:** Sysmon + Windows Event Logs → Vector agent on each Windows box → aggregator (`.11`)
-→ HEC → nano's Vector pipeline → OCSF parser → lake cell. The agent tags Sysmon events
+→ HEC (raw message payload) → nano's Vector pipeline → OCSF parser → lake cell. The agent tags Sysmon events
 `source_type=windows_sysmon` and everything else `source_type=windows_event`, and flattens each
 event to JSON in `message`. The aggregator forwards each source on its own HEC sink, **with its
 own ingest token**.
@@ -105,17 +105,27 @@ After the aggregator starts it posts one small marked event per source with that
 (`nano_ingest_verify_tokens`, on by default). A 401 fails the deploy with what to do: bind the
 token in **Ingestion → Credentials → Bind**, or `POST /api/ingest-tokens/{credential_id}/bind`.
 
-**A nano that predates per‑source tokens** (no binding API: `GET /api/ingest-tokens` has no
-`sources`, or 404) still routes on the install token plus `sourcetype`. There the role falls back
-to `nano_ingest_token` (the install's `VECTOR_AUTH_TOKEN`) as before, and says so; without one it
-fails with "set nano_ingest_token … or upgrade nano".
+The binding model applies to **HEC :8088 and HTTP :8080 / nginx `/ingest`**.
+The supported open-core API is `GET /api/ingest-tokens` to find a source id,
+then `POST /api/ingest-tokens {"name": "<sender>", "source_id": "<id>"}`.
+The response returns the token once. Authenticate these administration calls with
+an admin API key (`X-API-Key`) or a login session; send the issued ingest token
+with HEC or HTTP. Old APIs without source binding are refused; there is no shared
+install-token fallback.
+
+Raw **Vector :6000 and OTLP :4317/:4318 are unauthenticated, loopback-only**.
+Remote OTLP/HTTP uses `<base>/otlp/v1/logs` (or `/v1/metrics`, `/v1/traces`)
+through nginx with `Authorization: Bearer <install token>`. That OTLP path currently
+accepts only the install token, not the named per-source tokens; a separate upstream
+change is addressing it. The range uses HEC and does not depend on that change.
 
 > An existing range keeps its admin password: on the next deploy the SIEM role copies
 > `/root/.nano-lab-admin` from the SIEM to the controller, so the aggregator logs in with it. To
 > override, set `nano_lean_admin_password` and `nano_api_password` (from a vault, never a
 > committed value), or give the aggregator an admin API key in `nano_api_key`.
 
-**Parsers:** open‑core ships with only the OTLP parser live. `nano_lean` imports the OCSF parsers
+**Content:** rules and parsers sync from upstream `main` (OCSF 1.9); parsers are
+not bundled. UDM content is retained only on `legacy/clickhouse`. `nano_lean` imports the OCSF parsers
 named in `nano_lean_parsers` (default `windows_event`, `windows_sysmon`, `conduit_proxy`) from the
 public [nano-rs/parsers](https://github.com/nano-rs/parsers) repository and deploys them, so range
 events are searchable as OCSF (`class_uid`, `process.cmd_line`, `user.name`, …) from the first
@@ -127,7 +137,12 @@ event. Coverage today:
 | Security log | `windows_event` | `windows_event_ocsf` | EIDs 4624, 4625, 4634, 4672, 4688 |
 | PowerShell, Defender, System, Application, DNS Server, Directory Service | `windows_event` | `windows_event_ocsf` | **not mapped**: they fall into the parser's Authentication branch (class 3002, activity Other) |
 | Conduit proxy | `conduit_proxy` | `conduit_proxy_ocsf` | HTTP Activity 4002 |
-| Linux auth / syslog | — | `syslog`, `linux_journald`, `linux_auditd` (on the `ocsf-1.9` parser branch) | **not shipped**: no range host runs a Linux shipper yet, so these lanes see nothing |
+| Linux auth / syslog | — | `syslog`, `linux_journald`, `linux_auditd` (on upstream `main`) | **not shipped**: no range host runs a Linux shipper yet, so these lanes see nothing |
+
+Additional Linux, firewall or syslog senders are not installed by this blueprint.
+Before adding one, sync its parser from upstream `main`, deploy its log source,
+add its exact route key to `nano_ingest_sources`, and issue a distinct bound token.
+Never reuse the Windows, Sysmon, proxy or install credential for another source.
 
 ## Ship to a lean tenant
 
@@ -143,20 +158,16 @@ role_vars:
     windows_event: "<credential>"
     windows_sysmon: "<credential>"
     conduit_proxy: "<credential>"
-  # Or a collector credential for the sources without their own:
-  # nano_ingest_token: "<collector credential>"
 ```
 
 Issue credentials in the tenant's **Settings → Add data** (protocol **HEC**). Each token is written
-as a 0600 file under `/opt/vector-aggregator/secrets/` (one per source, plus `default` for a
-shared fallback token). Vector reads them through its `directory` secret backend (`SECRET[nano_ingest.<key>]`).
+as a 0600 file under `/opt/vector-aggregator/secrets/` (one per source). Vector reads them through its `directory` secret backend (`SECRET[nano_ingest.<key>]`).
 Tokens never go into `vector.toml`, and never into `${VAR}` env interpolation, which Vector ≥ 0.57
-no longer expands by default. HEC indexer acknowledgements are on automatically for `https://` URLs
-(lean) and off for the in‑range `http://` open‑core HEC, which runs with acks disabled.
-`nano_ingest_indexer_acknowledgements: true|false` overrides that. The SIEM VM can then be
-dropped from the range config. `nano_ingest_mode: vector` (Vector‑native :6000) still exists for
-an in‑range open‑core SIEM, but :6000 checks no token — lab networks only — and lean tenants have
-no such port.
+no longer expands by default. Hosted tenants receive at their dedicated Rackspace load balancer
+and collector-v2, landing natively in v2 storage. HEC indexer acknowledgements are enabled for
+both current open-core and hosted tenants; `nano_ingest_indexer_acknowledgements: false` is
+available for endpoints without ACK support. The SIEM VM can be dropped from the range config;
+also remove the aggregator's `depends_on` entry pointing to that VM.
 
 > Co‑locating the aggregator on the SIEM VM? RustFS holds 127.0.0.1:9000/9001 there, so set
 > `aggregator_vector_port` (and the agents' `vector_aggregator_port`) to something else, e.g. 9100.
@@ -183,7 +194,9 @@ check (no gen1 role deployed, no ClickHouse / gen1 lake profile referenced, ever
 config, no `X-Source-Type`, no shared aggregator token in the blueprint), and renders every scenario in `tests/scenarios/` with the roles' own templates and runs
 `vector validate` (0.59) on the result. Then `tests/provision/run.sh` runs the aggregator's token
 tasks against a mock of nano's ingest‑token API (issue, reuse, rotate, bind, wrong source, missing
-source, 401, a pre‑NAN‑3806 nano, a rejected login) and checks no token value reaches the output.
+source, 401, rejection of old APIs/shared tokens, a rejected login) and checks no token value reaches the output.
+`tests/hec_wire.py` runs the rendered HEC sender against a loopback mock and verifies
+all three original parser payloads, distinct credentials, gzip and receipt polling.
 
 <details>
 <summary><b>Customize</b> — event channels, VM sizing, single‑box iteration</summary>

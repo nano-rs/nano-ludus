@@ -97,28 +97,12 @@
     _nano_ingest_model: >-
       {{ 'bound' if (_nano_token_list.status == 200 and 'sources' in _nano_token_list.json) else 'legacy' }}
 
-# ---- Pre-#6582 nano: shared install token + sourcetype routing ----
-- name: Fall back to the shared token on a nano that predates per-source tokens
+- name: Require the source-binding API
+  ansible.builtin.fail:
+    msg: >-
+      This nano predates per-source ingest tokens (NAN-3806). Upgrade nano;
+      the range requires one credential bound to each source and never uses a shared install token.
   when: _nano_ingest_model == 'legacy'
-  block:
-    - name: Require a fallback token
-      ansible.builtin.assert:
-        that:
-          - nano_ingest_token | length > 0
-            or (_nano_ingest_sources | difference(nano_ingest_source_tokens.keys() | list) | length == 0)
-        fail_msg: >-
-          This nano ({{ _nano_api_url }}) predates per-source ingest tokens (NAN-3806):
-          it has no token-to-source binding API. Set nano_ingest_token to its install
-          token (VECTOR_AUTH_TOKEN in the install's .env), or upgrade nano.
-        quiet: true
-      no_log: true
-
-    - name: Say which path the range uses
-      ansible.builtin.debug:
-        msg: >-
-          {{ _nano_api_url }} predates per-source ingest tokens (NAN-3806); shipping
-          with nano_ingest_token and sourcetype routing, as before. Upgrade nano to bind
-          one token per source.
 
 # ---- Current nano: one token bound to each source ----
 - name: Issue or bind one token per source
@@ -215,19 +199,6 @@
                                   | map(attribute='credential_id')))) }}
       no_log: true
 
-    - name: Revoke the tokens the new ones replace
-      ansible.builtin.uri:
-        url: "{{ _nano_api_url }}/api/ingest-tokens/{{ item.revoke }}/revoke"
-        method: POST
-        headers: "{{ _nano_api_headers }}"
-        # 409 = already revoked.
-        status_code: [200, 409]
-      loop: "{{ _nano_token_plan | selectattr('action', 'equalto', 'create') | rejectattr('revoke', 'none') | list }}"
-      loop_control:
-        label: "{{ item.source_type }}"
-      changed_when: true
-      no_log: true
-
     - name: Re-read the bindings
       ansible.builtin.uri:
         url: "{{ _nano_api_url }}/api/ingest-tokens"
@@ -251,8 +222,38 @@
         | selectattr('route_key', 'equalto', item.0)
         | list | length == 0
 
+    # Persist replacement credentials before revoking anything: a failed copy
+    # must leave the old sender credential usable.
+    - name: Create the issued-token directory
+      ansible.builtin.file:
+        path: "{{ _aggregator_secrets_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Persist newly issued tokens before retiring the previous ones
+      ansible.builtin.copy:
+        content: "{{ item.json.token }}"
+        dest: "{{ _aggregator_secrets_dir }}/{{ item.item.source_type }}"
+        mode: "0600"
+      loop: "{{ _nano_token_created.results }}"
+      register: _nano_token_persisted
+      no_log: true
+
     - name: Record the issued credential ids (ids only, never the tokens)
       ansible.builtin.copy:
         content: "{{ _nano_ingest_credentials | to_nice_json }}\n"
         dest: "{{ _aggregator_state_file }}"
         mode: "0600"
+
+    - name: Revoke the tokens the new ones replace
+      ansible.builtin.uri:
+        url: "{{ _nano_api_url }}/api/ingest-tokens/{{ item.revoke }}/revoke"
+        method: POST
+        headers: "{{ _nano_api_headers }}"
+        # 409 = already revoked.
+        status_code: [200, 409]
+      loop: "{{ _nano_token_plan | selectattr('action', 'equalto', 'create') | rejectattr('revoke', 'none') | list }}"
+      loop_control:
+        label: "{{ item.source_type }}"
+      changed_when: true
+      no_log: true
