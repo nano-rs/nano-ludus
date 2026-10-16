@@ -1,15 +1,109 @@
 ---
 # Vector Aggregator Configuration
+#
+# The aggregator is the range's single shipper: Windows agents (and the Conduit
+# sidecar) send to it over the Vector protocol, and it forwards everything to
+# nano. NAN-3397 retargeted the forward hop at the current ingest model.
 
-# ---- Upstream SIEM target ----
-# IP of the SIEM box running the nanosiem_stack role
-nanosiem_siem_ip: ""  # REQUIRED - set in role_vars
+# ---- Where the range ships (NAN-3397) ----
+# nano_ingest_mode picks the wire protocol of the forward hop:
+#
+#   hec    (default) HEC, one token per source. The only lane that works
+#          against BOTH targets:
+#            - an open-core lean install:  http://<siem-ip>:8088
+#              tokens = issued by this role, one bound to each source
+#            - a hosted lean tenant:       https://<tenant>.ingest.nano.rs
+#              tokens = ingest credentials issued in Settings > Add data
+# Raw Vector is unauthenticated and loopback-only; this role supports HEC only.
+nano_ingest_mode: hec
 
-# Port the SIEM's Vector listens on for the Vector protocol
-nanosiem_siem_vector_port: 6000
+# hec: the base URL of the HEC endpoint, without a path. Vector appends
+# /services/collector/event. Empty = derive http://<nanosiem_siem_ip>:8088,
+# which is the open-core install inside the range.
+nano_ingest_url: ""
 
-# Auth token for the SIEM's HTTP ingestion endpoint
-nanosiem_vector_auth_token: "nanosiem-lab-token"
+# ---- Ingest tokens (NAN-3841, nano's NAN-3806 model) ----
+# nano decides the log source from the TOKEN alone: every ingest token is
+# bound to exactly one log source, and every event sent with it lands there,
+# whatever `sourcetype` it declares. An unbound token is refused with HTTP 401
+# and there is no multiplex token. So the aggregator sends each source_type
+# with its own token, bound to that source.
+#
+# Open-core in-range SIEM: the role issues those tokens itself over the nano
+# API (see "Token provisioning" below) and nothing here needs to be set.
+#
+# hec: per-source tokens, keyed by source_type. Set them to use tokens you
+# issued yourself (Ingestion > Credentials, or a hosted lean tenant's source
+# credentials), e.g.
+#   nano_ingest_source_tokens:
+#     windows_event: "<token bound to windows_event>"
+#     windows_sysmon: "<token bound to windows_sysmon>"
+#     conduit_proxy: "<token bound to conduit_proxy>"
+# On open-core, a given `nit_` token that is still unbound is bound to its
+# source_type's log source; one bound to a different source fails the deploy.
+nano_ingest_source_tokens: {}
+
+# Deprecated: must remain empty. Every source needs its own bound token.
+nano_ingest_token: ""
+
+# hec: the source_types the aggregator forwards. Each gets its own HEC sink
+# (and disk buffer) and its own token. Any other source_type is
+# dropped and counted (component nano_unrouted). Sources listed in
+# nano_ingest_source_tokens are added automatically.
+nano_ingest_sources:
+  - windows_event
+  - windows_sysmon
+  - conduit_proxy
+
+# ---- Token provisioning (open-core nano) ----
+# The nano API the role issues per-source tokens from. Empty = derive
+# http://<nanosiem_siem_ip> when the range ships to its own SIEM (no
+# nano_ingest_url); a hosted lean tenant is never provisioned here.
+nano_api_url: ""
+# Credentials for that API, with the settings:system permission (an admin).
+# An API key (sent as X-API-Key) is preferred; otherwise the role logs in with
+# email + password. With none of them set, the role issues nothing and uses
+# nano_ingest_source_tokens as given.
+# nano_api_password empty (the default) = the range's generated lab admin
+# password from nano_lab_admin_password_file on the controller, when the range
+# ships to its own SIEM. Set nano_api_password / nano_api_key only to override.
+nano_api_key: ""
+nano_api_email: "admin@lab.local"
+nano_api_password: ""
+# The range's lab admin password lives on the Ludus controller, generated once
+# per range (random, 0600, never committed). nano_lean writes it; the
+# aggregator reads it to log in and issue the per-source ingest tokens.
+nano_lab_secrets_dir: "{{ lookup('ansible.builtin.env', 'HOME') }}/.nano-ludus/{{ range_id | default('range') }}"
+nano_lab_admin_password_file: "{{ nano_lab_secrets_dir }}/lab-admin-password"
+# How long to wait for the SIEM's API and for each source's log source to exist
+# (the SIEM role deploys the parsers): retries x delay seconds.
+nano_api_wait_retries: 80
+nano_api_wait_delay: 15
+# Name prefix of the tokens the role issues (unique per issue, <= 100 chars).
+nano_ingest_token_name_prefix: "ludus-{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '-') | truncate(40, true, '') }}"
+
+# hec: after the aggregator starts, post one small marked event per source with
+# that source's token, and fail on a 401/403 with what to do about it.
+nano_ingest_verify_tokens: true
+
+# HEC receipts are enabled on current open-core and hosted collector-v2.
+# Empty = enabled; false is only for an older endpoint without HEC ACK support.
+nano_ingest_indexer_acknowledgements: ""
+
+# hec: verify the endpoint's TLS certificate (https URLs only).
+nano_ingest_tls_verify: true
+
+# hec: request compression. Both targets accept gzip.
+nano_ingest_compression: gzip
+
+# ---- In-range target ----
+# IP of the SIEM box; supplies the default HEC and administration API URLs.
+nanosiem_siem_ip: ""
+
+# ---- Aggregator image ----
+# Pinned to the Vector release the platform runs (0.59, VRL 0.36), by digest.
+# The alpine flavour is required: the healthcheck uses busybox wget/awk.
+aggregator_vector_image: "timberio/vector:0.59.0-alpine@sha256:0e36bc2a290039e9b6a5e92f04bd2f133223506f72d09682c1df16c015172b7a"
 
 # ---- Aggregator listen ports ----
 # Port for Vector-to-Vector protocol (agents connect here)
@@ -19,7 +113,8 @@ aggregator_vector_port: 9000
 aggregator_deploy_dir: /opt/vector-aggregator
 
 # ---- Buffering ----
-# Disk buffer max size in bytes (1GB default)
+# Disk buffer max size in bytes, per forward sink (1GB default). In hec mode
+# there is one sink, and one buffer, per source in nano_ingest_sources.
 aggregator_buffer_max_bytes: 1073741824
 
 # What the aggregator does when that buffer fills (NAN-2364).
@@ -38,5 +133,5 @@ aggregator_buffer_when_full: drop_newest
 aggregator_health_buffer_pct: 90
 
 # ---- Processing ----
-# Add source_type enrichment for Windows events
+# Stamp aggregator_host / aggregator_timestamp on every forwarded event.
 aggregator_enrich_windows_events: true

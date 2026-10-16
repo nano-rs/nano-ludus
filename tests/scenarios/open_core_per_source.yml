@@ -1,0 +1,12 @@
+---
+# In-range open-core lean SIEM with per-source tokens (NAN-3841, the blueprint
+# default on a nano with NAN-3806): one token bound to each source, no shared
+# token. This is what ingest_tokens.yml hands the template after issuing them.
+render_parts: [aggregator]
+nano_ingest_mode: hec
+nanosiem_siem_ip: 10.5.10.10
+nano_ingest_token: ""
+nano_ingest_source_tokens:
+  windows_event: TESTTOKEN-nit-winevent-0123456789abcdef
+  windows_sysmon: TESTTOKEN-nit-sysmon-0123456789abcdef
+  conduit_proxy: TESTTOKEN-nit-conduit-0123456789abcdef

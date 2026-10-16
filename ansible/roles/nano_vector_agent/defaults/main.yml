@@ -7,10 +7,15 @@ vector_aggregator_ip: ""  # REQUIRED - set in role_vars
 vector_aggregator_port: 9000
 
 # ---- Vector version ----
-# Using nightly build — windows_event_log source merged 2026-03-13, not yet in a stable release.
-# Switch to a stable version+URL once 0.55.0+ ships with the windows_event_log source.
-vector_version: "nightly"
-vector_msi_url: "https://packages.timber.io/vector/nightly/latest/vector-nightly-x64.msi"
+# Pinned to the release the platform runs (Vector 0.59, VRL 0.36), which ships
+# the windows_event_log source in the stable Windows build (NAN-3397; the role
+# used a floating nightly before). An agent already on another version is
+# upgraded in place on the next deploy.
+vector_version: "0.59.0"
+vector_msi_url: "https://packages.timber.io/vector/{{ vector_version }}/vector-{{ vector_version }}-x64.msi"
+# sha256 of the 0.59.0 MSI. Change it together with vector_version (or set ""
+# to skip the check for a build you cannot pin).
+vector_msi_sha256: "8d1aefe9a2c7b4d440dd211a7646f76ad201d31c9dcbe1d3eb2664ce12a0b1cd"
 
 # ---- Windows Event Log channels ----
 vector_eventlog_channels:

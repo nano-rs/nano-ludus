@@ -1,0 +1,127 @@
+---
+# Import and deploy the range's OCSF parsers from nano-rs/parsers (NAN-3397).
+# Same calls as Settings > Parser Repository in the UI. On open-core
+# the API syncs OCSF 1.9 content from upstream main.
+- name: Log in as the lab admin
+  ansible.builtin.uri:
+    url: "http://localhost/api/auth/login"
+    method: POST
+    body_format: json
+    body:
+      email: "{{ nano_lean_admin_email }}"
+      password: "{{ _nano_lean_admin_password }}"
+  register: _nano_lean_login
+  no_log: true
+
+- name: Remember the session
+  ansible.builtin.set_fact:
+    _nano_lean_auth:
+      Authorization: "Bearer {{ _nano_lean_login.json.tokens.access_token }}"
+  no_log: true
+
+- name: List parser repositories
+  ansible.builtin.uri:
+    url: "http://localhost/api/parser-repositories"
+    headers: "{{ _nano_lean_auth }}"
+  register: _nano_lean_repos
+  no_log: true
+
+- name: Add nano-rs/parsers
+  ansible.builtin.uri:
+    url: "http://localhost/api/parser-repositories"
+    method: POST
+    headers: "{{ _nano_lean_auth }}"
+    body_format: json
+    body:
+      name: nano-rs/parsers
+      url: https://github.com/nano-rs/parsers
+      branch: main
+  register: _nano_lean_repo_created
+  no_log: true
+  when: _nano_lean_repos.json.repositories | selectattr('slug', 'equalto', 'nano-rs/parsers') | list | length == 0
+
+- name: Pick the repository
+  ansible.builtin.set_fact:
+    _nano_lean_repo_id: >-
+      {{ (_nano_lean_repo_created.json.id) if (_nano_lean_repo_created.json is defined)
+         else (_nano_lean_repos.json.repositories | selectattr('slug', 'equalto', 'nano-rs/parsers') | first).id }}
+
+- name: Sync the repository
+  ansible.builtin.uri:
+    url: "http://localhost/api/parser-repositories/{{ _nano_lean_repo_id }}/sync"
+    method: POST
+    headers: "{{ _nano_lean_auth }}"
+  no_log: true
+
+- name: Wait for the sync
+  ansible.builtin.uri:
+    url: "http://localhost/api/parser-repositories/{{ _nano_lean_repo_id }}/sync/status"
+    headers: "{{ _nano_lean_auth }}"
+  register: _nano_lean_sync
+  until: _nano_lean_sync.json.status in ['success', 'failed', 'error']
+  retries: 40
+  delay: 3
+  failed_when: _nano_lean_sync.json.status != 'success'
+  no_log: true
+
+- name: List the repository's parsers
+  ansible.builtin.uri:
+    url: "http://localhost/api/parser-repositories/{{ _nano_lean_repo_id }}/parsers?limit=1000"
+    headers: "{{ _nano_lean_auth }}"
+  register: _nano_lean_catalog
+  no_log: true
+
+- name: Resolve the requested parsers
+  ansible.builtin.set_fact:
+    _nano_lean_wanted: >-
+      {{ _nano_lean_catalog.json
+         | selectattr('file_path', 'in', nano_lean_parsers | map('regex_replace', '^(.*)$', 'parsers-ocsf/\1/parser.yaml') | list)
+         | list }}
+
+- name: Require every requested parser to exist
+  ansible.builtin.assert:
+    that:
+      - _nano_lean_wanted | length == nano_lean_parsers | length
+    fail_msg: >-
+      nano-rs/parsers has no parsers-ocsf/<name>/parser.yaml for some of
+      {{ nano_lean_parsers }} (found {{ _nano_lean_wanted | map(attribute='file_path') | list }}).
+    quiet: true
+
+- name: Import the parsers not imported yet
+  ansible.builtin.uri:
+    url: "http://localhost/api/parser-repositories/{{ _nano_lean_repo_id }}/parsers/import/{{ item.file_path | urlencode | replace('/', '%2F') }}"
+    method: POST
+    headers: "{{ _nano_lean_auth }}"
+    body_format: json
+    body:
+      import_type: linked
+      source_type: "{{ item.file_path.split('/')[1] }}"
+  loop: "{{ _nano_lean_wanted | rejectattr('is_imported') | list }}"
+  loop_control:
+    label: "{{ item.file_path }}"
+  register: _nano_lean_imported
+
+- name: Collect the parsers' log sources
+  ansible.builtin.set_fact:
+    _nano_lean_log_sources: >-
+      {{ (_nano_lean_wanted | selectattr('is_imported') | map(attribute='linked_log_source_id') | list)
+         + (_nano_lean_imported.results | default([]) | map(attribute='json') | map(attribute='log_source_id') | list) }}
+
+- name: Read each log source
+  ansible.builtin.uri:
+    url: "http://localhost/api/log-sources/{{ item }}"
+    headers: "{{ _nano_lean_auth }}"
+  loop: "{{ _nano_lean_log_sources }}"
+  register: _nano_lean_ls
+  no_log: true
+
+- name: Deploy the ones not live yet
+  ansible.builtin.uri:
+    url: "http://localhost/api/log-sources/{{ item.json.id }}/deploy"
+    method: POST
+    headers: "{{ _nano_lean_auth }}"
+    timeout: 120
+  loop: "{{ _nano_lean_ls.results | rejectattr('json.deployed') | list }}"
+  loop_control:
+    label: "{{ item.json.name }}"
+  changed_when: true

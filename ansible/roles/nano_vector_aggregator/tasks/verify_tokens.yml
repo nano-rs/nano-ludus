@@ -1,0 +1,64 @@
+---
+# Prove each source's token is accepted (NAN-3841). Posts one small marked HEC
+# event per forwarded source with that source's token, straight to nano (not
+# through the aggregator, so a refusal is attributed to the right token).
+#
+# A current open-core nano answers 401 for a token that is not bound to a log
+# source; a hosted lean tenant answers 401/403 for a wrong credential.
+# Inputs: _nano_ingest_url, _nano_ingest_sources, _nano_ingest_model (when the
+# role provisioned), _nano_ingest_credentials.
+- name: Send one marked event per source with its own token
+  ansible.builtin.uri:
+    url: "{{ _nano_ingest_url }}/services/collector/event"
+    method: POST
+    headers:
+      Authorization: "Splunk {{ (_nano_ingest_tokens | default(nano_ingest_source_tokens))[item] }}"
+    body_format: json
+    body:
+      # The sourcetype is informational only: nano routes on the token and keeps
+      # this as claimed_source_type.
+      sourcetype: "{{ item }}"
+      event:
+        message: "nano-ludus token check {{ item }} {{ inventory_hostname }}"
+        nano_ludus_token_check: true
+    validate_certs: "{{ nano_ingest_tls_verify | bool }}"
+    status_code: [200, 201, 202, 400, 401, 403, 404, 413, 429, 500, 502, 503, 504, -1]
+  loop: "{{ _nano_ingest_sources }}"
+  register: _nano_token_checks
+  until: _nano_token_checks.status in [200, 201, 202]
+  retries: 5
+  delay: 2
+  failed_when: false
+  no_log: true
+
+- name: Keep only the outcome of each check
+  ansible.builtin.set_fact:
+    _nano_token_outcomes: >-
+      {{ _nano_token_checks.results | map(attribute='item')
+         | zip(_nano_token_checks.results | map(attribute='status')) | list }}
+
+- name: Fail on a refused token
+  ansible.builtin.fail:
+    msg: >-
+      {% if (_nano_ingest_model | default('')) == 'bound' %}nano refused the token for {{ item.0 }}
+      (HTTP {{ item.1 }}): it is not bound to a log source. Bind it in Ingestion >
+      Credentials > Bind, or POST /api/ingest-tokens/{{ (_nano_ingest_credentials | default({}))[item.0]
+      | default('{credential_id}') }}/bind with {"source_id": "<the {{ item.0 }} log source>"}, then
+      re-run the deploy.{% else %}nano refused the token for {{ item.0 }} (HTTP {{ item.1 }}):
+      wrong token for {{ _nano_ingest_url }}. Check nano_ingest_source_tokens[{{ item.0 }}] /
+      nano_ingest_token. A nano with per-source tokens (NAN-3806) also refuses a token that is
+      not bound to a log source: bind it in Ingestion > Credentials > Bind.{% endif %}
+  loop: "{{ _nano_token_outcomes }}"
+  loop_control:
+    label: "{{ item.0 }}"
+  when: item.1 in [401, 403]
+
+- name: Warn when a token could not be checked
+  ansible.builtin.debug:
+    msg: >-
+      Could not check the token for {{ item.0 }}: {{ _nano_ingest_url }} answered
+      {{ item.1 }}. The aggregator keeps buffering until nano accepts its events.
+  loop: "{{ _nano_token_outcomes }}"
+  loop_control:
+    label: "{{ item.0 }}"
+  when: item.1 not in [200, 201, 202, 401, 403]

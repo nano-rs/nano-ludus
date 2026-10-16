@@ -2,9 +2,24 @@
 #
 # Topology:
 #   [Win DC01]  ─┐  event logs ──► Vector agent ──┐
-#   [Win SRV01] ─┤  HTTP traffic ──► Conduit ───┤──► [Proxy/Aggregator] ──► [SIEM] ──► ClickHouse
-#   [Win WS01]  ─┘  (MITM + CA trust)          │    (Vector + Conduit)       (Debian)
-#                                                └──► (Debian .10.11)
+#   [Win SRV01] ─┤  HTTP traffic ──► Conduit ───┤──► [Proxy/Aggregator] ──HEC──► [SIEM: open-core lean]
+#   [Win WS01]  ─┘  (MITM + CA trust)          │    (Vector 0.59 + Conduit)     (OCSF 1.9 on RustFS)
+#                                                └──► (Debian .10.11)              (Debian .10.10)
+#
+# NAN-3397 / NAN-3491: the SIEM box runs the open-core LEAN install
+# (install.sh, lean profile: one trusted-local lake cell) instead of the
+# retired gen1 stacks, and the aggregator
+# ships over authenticated HEC. To ship the range to a hosted lean
+# tenant instead (or as well), point the aggregator's nano_ingest_url at
+# https://<tenant>.ingest.nano.rs and give it that tenant's ingest
+# credential(s) - see README "Ship to a lean tenant"; the SIEM VM is then
+# optional.
+#
+# NAN-3841: nano binds every ingest token to exactly one log source (NAN-3806)
+# and the token alone decides where an event lands. The aggregator therefore
+# ships each log type (windows_event, windows_sysmon, conduit_proxy) with its
+# own token, and issues those tokens itself over the SIEM's API once the SIEM
+# role has deployed the parsers.
 #
 # VLAN 10: 10.x.10.0/24 (where x = your Ludus range's second octet)
 #
@@ -28,11 +43,18 @@
 # If you rename a role or drop its `author`, update BOTH sides or this breaks
 # again silently.
 #
-# The SIEM box pulls the public open-core images from ghcr.io/nano-rs (no auth).
+# Lab admin password: random per range, never in this file. The SIEM's
+# nano_lean role generates it once and keeps it on the Ludus controller
+# (~/.nano-ludus/<range_id>/lab-admin-password, 0600) and on the SIEM
+# (/root/.nano-lab-admin, 0600). The aggregator reads the controller copy to log
+# in and issue one ingest token per source. To override, set
+# nano_lean_admin_password and nano_api_password from a vault, or give the
+# aggregator an admin API key (nano_api_key).
 
 ludus:
   # =========================================================================
-  # SIEM Box - Full NanoSIEM stack (API, Search, ClickHouse, Postgres, Vector)
+  # SIEM Box - open-core nano lean (install.sh, lean profile): API, search,
+  # jobs, web, Vector 0.59 ingest, one lake cell, OCSF 1.9 on RustFS
   # =========================================================================
   - vm_name: "{{ range_id }}-nanosiem"
     hostname: "{{ range_id }}-SIEM"
@@ -44,20 +66,29 @@ ludus:
     linux: true
     roles:
       - geerlingguy.docker
-      - NanoSIEM.nano_stack
+      - NanoSIEM.nano_lean
     role_vars:
       docker_users:
         - localuser
-      # Images default to ghcr.io/nano-rs/nano-*:latest (public, no auth).
-      # Pin a release by uncommenting:
-      # nanosiem_version: "v0.1.598"
+      # Current lean source; images pinned to the published open-core release.
+      # nano_lean_repo_url: "https://github.com/nano-rs/nano.git"
+      # nano_lean_ref: "main"
+      # nano_lean_version: "1.0.6"
       #
-      # --- Lab defaults (change for production) ---
-      nanosiem_dev_mode: "true"
-      nanosiem_vector_auth_token: "nanosiem-lab-token"
+      # --- Lab defaults ---
+      # The admin password is generated per range (see the header); no
+      # nano_lean_admin_password here.
+      # The install token (VECTOR_AUTH_TOKEN) is no longer used by the range:
+      # the aggregator ships with one token per source. Pin it only for other
+      # senders of your own.
+      # nano_lean_ingest_token: "<24+ base64url characters>"
+      nano_lean_parsers:
+        - windows_event
+        - windows_sysmon
+        - conduit_proxy
 
   # =========================================================================
-  # Proxy / Aggregator - Vector aggregator + general proxy services
+  # Proxy / Aggregator - Vector aggregator (the range's shipper) + Conduit
   # =========================================================================
   - vm_name: "{{ range_id }}-proxy"
     hostname: "{{ range_id }}-PROXY"
@@ -69,15 +100,28 @@ ludus:
     linux: true
     roles:
       - geerlingguy.docker
-      - NanoSIEM.nano_vector_aggregator
+      # Runs after the SIEM's install and parser deploy: it issues the
+      # per-source ingest tokens over the SIEM's API (Ludus 2 depends_on).
+      - name: NanoSIEM.nano_vector_aggregator
+        depends_on:
+          - vm_name: "{{ range_id }}-nanosiem"
+            role: NanoSIEM.nano_lean
       - NanoSIEM.nano_conduit_proxy
     role_vars:
       docker_users:
         - localuser
-      # Points to the SIEM box above (last octet 10)
+      # Ship to the SIEM box above (last octet 10) over HEC :8088, one token
+      # per source. The role issues them over http://<siem>/api, logged in as
+      # the lab admin (admin@lab.local) with the range's generated password.
+      nano_ingest_mode: hec
       nanosiem_siem_ip: "10.{{ range_second_octet }}.10.10"
-      nanosiem_siem_vector_port: 6000
-      nanosiem_vector_auth_token: "nanosiem-lab-token"
+      #
+      # Lean tenant instead: drop nanosiem_siem_ip, and set
+      # nano_ingest_url: "https://<tenant>.ingest.nano.rs"
+      # nano_ingest_source_tokens:                         # one credential per source
+      #   windows_event: "<credential>"
+      #   windows_sysmon: "<credential>"
+      #   conduit_proxy: "<credential>"
       # Conduit proxy — pulls from ghcr.io/the2dl/conduit-{proxy,api}:latest
 
   # =========================================================================

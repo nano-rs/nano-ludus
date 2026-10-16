@@ -1,8 +1,26 @@
 # Vector Aggregator Configuration (Ludus Lab)
-# Receives logs from Windows Vector agents via Vector protocol
-# Enriches and forwards to SIEM Vector instance
+# Managed by the nano_vector_aggregator Ansible role - do not edit in place.
+#
+# Receives logs from the range's Vector agents over the Vector protocol and
+# forwards them to nano ({{ nano_ingest_mode }} mode).
+{% if nano_ingest_mode == 'hec' %}
+#
+# Forward hop: HEC to {{ _nano_ingest_url }}, one token per source
+# Sources: {{ _nano_ingest_sources | join(', ') }}
+{% endif %}
 
 data_dir = "/var/lib/vector"
+{% if nano_ingest_mode == 'hec' %}
+
+# Ingest tokens are NOT in this file. Each is a 0600 file in secrets/ (one per
+# source), read through Vector's
+# directory secret backend. Not env-var interpolation: Vector >= 0.57 no longer expands
+# environment variables in config files unless told to "dangerously".
+[secret.nano_ingest]
+type = "directory"
+path = "/etc/vector/secrets"
+remove_trailing_whitespace = true
+{% endif %}
 
 [api]
 enabled = true
@@ -16,33 +34,22 @@ type = "vector"
 address = "0.0.0.0:{{ aggregator_vector_port }}"
 acknowledgements.enabled = true
 
-# =============================================================================
-# Transform: Enrich Windows events with source_type
-# =============================================================================
+{% set _upstream = 'agents' %}
 {% if aggregator_enrich_windows_events %}
+# =============================================================================
+# Transform: tag events that came through this aggregator
+# =============================================================================
 [transforms.enrich]
 type = "remap"
 inputs = ["agents"]
 source = '''
-# Tag events coming through the aggregator
 .aggregator_host = "{{ ansible_hostname }}"
 .aggregator_timestamp = now()
 '''
-{% endif %}
+{% set _upstream = 'enrich' %}
 
-# =============================================================================
-# Sink: Forward to SIEM Vector instance (Vector-to-Vector protocol)
-# =============================================================================
-[sinks.siem]
-type = "vector"
-{% if aggregator_enrich_windows_events %}
-inputs = ["enrich"]
-{% else %}
-inputs = ["agents"]
 {% endif %}
-address = "{{ nanosiem_siem_ip }}:{{ nanosiem_siem_vector_port }}"
-acknowledgements.enabled = true
-
+{% macro buffer(sink) %}
 # Disk buffer for reliability - survives aggregator restarts.
 #
 # NAN-2364: when_full defaults to drop_newest, NOT block. The disk buffer is
@@ -52,10 +59,57 @@ acknowledgements.enabled = true
 # with no error anywhere downstream. Restarting does not clear that, because a
 # restart preserves the backlog rather than draining it. Shed instead, and let
 # the metrics and healthcheck say so.
-[sinks.siem.buffer]
+[sinks.{{ sink }}.buffer]
 type = "disk"
 max_size = {{ aggregator_buffer_max_bytes }}
 when_full = "{{ aggregator_buffer_when_full }}"
+{% endmacro %}
+{% macro hec_sink(st) %}
+[sinks.nano_hec_{{ st }}]
+type = "splunk_hec_logs"
+inputs = ["by_source.{{ st }}"]
+endpoint = "{{ _nano_ingest_url }}"
+default_token = "SECRET[nano_ingest.{{ st }}]"
+# The TOKEN decides the source (NAN-3806): nano lands every event sent with
+# it in the log source it is bound to. The sourcetype never routes; nano keeps
+# a differing one as claimed_source_type. It is sent as a literal for that.
+# (Vector 0.59 refuses an unconfined `{{ '{{' }} source_type {{ '}}' }}` template here.)
+sourcetype = "{{ st }}"
+host_key = "src_host"
+compression = "{{ nano_ingest_compression }}"
+# Preserve the sender's raw message. Current nano HEC decodes object payloads
+# as JSON bytes; encoding the whole Vector event nests message a second time
+# and hides event_id/event_data from the OCSF parsers.
+encoding.codec = "text"
+acknowledgements.enabled = true
+acknowledgements.indexer_acknowledgements_enabled = {{ ((nano_ingest_indexer_acknowledgements | string | length > 0) | ternary(nano_ingest_indexer_acknowledgements | bool, true)) | lower }}
+{% if _nano_ingest_url is match('https://') %}
+tls.verify_certificate = {{ nano_ingest_tls_verify | bool | lower }}
+{% endif %}
+
+{{ buffer('nano_hec_' ~ st) }}
+{% endmacro %}
+# =============================================================================
+# Route by source_type (NAN-3397): one HEC sink per source the range ships,
+# each with its own token, bound to that source (NAN-3841).
+# =============================================================================
+[transforms.by_source]
+type = "route"
+inputs = ["{{ _upstream }}"]
+reroute_unmatched = true
+{% for st in _nano_ingest_sources %}
+route.{{ st }} = '.source_type == "{{ st }}"'
+{% endfor %}
+
+{% for st in _nano_ingest_sources %}
+{{ hec_sink(st) }}
+{% endfor %}
+# Events whose source_type is not in nano_ingest_sources are dropped here and
+# counted (component_id="nano_unrouted" in the metrics below).
+[sinks.nano_unrouted]
+type = "blackhole"
+inputs = ["by_source._unmatched"]
+print_interval_secs = 0
 
 # =============================================================================
 # Metrics

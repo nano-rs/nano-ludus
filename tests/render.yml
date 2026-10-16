@@ -1,0 +1,64 @@
+---
+# Render the Vector configs the roles generate, with the roles' own defaults,
+# templates and validation tasks, for ONE scenario passed as extra vars:
+#   ansible-playbook tests/render.yml -e @tests/scenarios/<name>.yml -e out_dir=<dir>
+# tests/check.sh runs it per scenario, then `vector validate` (0.59) on the output.
+- name: Render the range's Vector configs
+  hosts: localhost
+  gather_facts: false
+  vars:
+    roles_dir: "{{ playbook_dir }}/../ansible/roles"
+    ansible_hostname: RANGE-HOST
+    ansible_default_ipv4:
+      address: 10.5.10.11
+  tasks:
+    - name: Load role defaults (scenario extra vars override them)
+      ansible.builtin.include_vars:
+        file: "{{ roles_dir }}/{{ item }}/defaults/main.yml"
+      loop:
+        - nano_vector_aggregator
+        - nano_vector_agent
+        - nano_conduit_proxy
+
+    - name: Output dir
+      ansible.builtin.file:
+        path: "{{ out_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Aggregator
+      when: "'aggregator' in render_parts"
+      block:
+        - name: Run the aggregator role's ingest validation
+          ansible.builtin.include_tasks: "{{ roles_dir }}/nano_vector_aggregator/tasks/ingest_facts.yml"
+
+        - name: Write the aggregator's token files
+          ansible.builtin.include_tasks: "{{ roles_dir }}/nano_vector_aggregator/tasks/ingest_secrets.yml"
+          vars:
+            _aggregator_secrets_dir: "{{ out_dir }}/secrets"
+
+        - name: Template the aggregator files
+          ansible.builtin.template:
+            src: "{{ roles_dir }}/nano_vector_aggregator/templates/{{ item.src }}"
+            dest: "{{ out_dir }}/{{ item.dest }}"
+            mode: "0600"
+          loop:
+            - { src: vector-aggregator.toml.j2, dest: aggregator.toml }
+            - { src: docker-compose.yml.j2, dest: aggregator-compose.yml }
+
+    - name: Template the Windows agent config
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/nano_vector_agent/templates/vector-agent.toml.j2"
+        dest: "{{ out_dir }}/agent.toml"
+        mode: "0644"
+      when: "'agent' in render_parts"
+
+    - name: Template the Conduit sidecar config
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/nano_conduit_proxy/templates/{{ item.src }}"
+        dest: "{{ out_dir }}/{{ item.dest }}"
+        mode: "0644"
+      loop:
+        - { src: vector-conduit.toml.j2, dest: conduit.toml }
+        - { src: docker-compose.yml.j2, dest: conduit-compose.yml }
+      when: "'conduit' in render_parts"

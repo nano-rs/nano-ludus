@@ -1,9 +1,6 @@
 ---
-- name: Validate SIEM IP is set
-  ansible.builtin.assert:
-    that:
-      - nanosiem_siem_ip | length > 0
-    fail_msg: "nanosiem_siem_ip must be set in role_vars"
+- name: Validate the ingest target and derive its facts
+  ansible.builtin.include_tasks: ingest_facts.yml
 
 # NAN-2364: the healthcheck renders this through Jinja's `int` filter, which
 # turns any non-numeric value into 0 - silently disabling the buffer check
@@ -45,6 +42,28 @@
     mode: "0644"
   notify: restart vector-aggregator
 
+# NAN-3841: on an open-core nano, issue (or bind) one token per source over
+# the nano API before the token files are written.
+- name: Issue the per-source ingest tokens
+  ansible.builtin.include_tasks: ingest_tokens.yml
+  vars:
+    _aggregator_secrets_dir: "{{ aggregator_deploy_dir }}/secrets"
+    _aggregator_state_file: "{{ aggregator_deploy_dir }}/ingest-credentials.json"
+  when: _nano_ingest_provision | default(false) | bool
+
+# The forward hop's credentials live here, not in vector.toml (NAN-3397).
+- name: Write the ingest tokens
+  ansible.builtin.include_tasks: ingest_secrets.yml
+  vars:
+    _aggregator_secrets_dir: "{{ aggregator_deploy_dir }}/secrets"
+
+- name: Restart the aggregator when a token changed
+  ansible.builtin.debug:
+    msg: "ingest tokens changed"
+  changed_when: true
+  when: _aggregator_secret_writes is changed or _aggregator_secret_removals is changed or _nano_token_persisted is changed
+  notify: restart vector-aggregator
+
 - name: Template aggregator container healthcheck
   ansible.builtin.template:
     src: healthcheck.sh.j2
@@ -77,14 +96,15 @@
     comment: "Vector aggregator - Prometheus metrics"
 
 # ---- Start ----
-- name: Pull latest container images
+- name: Pull the pinned Vector image
   ansible.builtin.shell: |
     cd {{ aggregator_deploy_dir }} && docker compose pull
   # Serialize the pull so it doesn't overwhelm the lab DNS forwarder (NAN-1230).
   environment:
     COMPOSE_PARALLEL_LIMIT: "1"
   register: aggregator_pull
-  changed_when: true
+  # The image is pinned by digest, so an already-present image is a no-op.
+  changed_when: aggregator_pull.stderr is search('Download complete|Pull complete')
   # Retry transient lab-DNS timeouts mid-pull (NAN-1224).
   retries: 5
   delay: 15
@@ -93,7 +113,8 @@
 - name: Start Vector aggregator
   ansible.builtin.shell: |
     cd {{ aggregator_deploy_dir }} && docker compose up -d
-  changed_when: true
+  register: aggregator_up
+  changed_when: aggregator_up.stderr is search('\\b(Created|Recreated|Started)\\b')
 
 - name: Wait for Vector aggregator to be healthy
   ansible.builtin.uri:
@@ -105,6 +126,16 @@
   delay: 3
   until: health_check.status == 200
 
+- name: Check that nano accepts each source's token
+  ansible.builtin.include_tasks: verify_tokens.yml
+  when: nano_ingest_mode == 'hec' and nano_ingest_verify_tokens | bool
+
+- name: Describe the forward hop
+  ansible.builtin.set_fact:
+    _aggregator_target: >-
+      {% if nano_ingest_mode == 'hec' %}{{ _nano_ingest_url }} (HEC, one token per source: {{ _nano_ingest_sources | join(', ') }}){%
+      else %}{{ nanosiem_siem_ip }}:{{ nanosiem_siem_vector_port }} (Vector native, unauthenticated){% endif %}
+
 - name: Print aggregator info
   ansible.builtin.debug:
     msg: |
@@ -113,7 +144,7 @@
       ============================================
       Agent intake:  {{ ansible_default_ipv4.address }}:{{ aggregator_vector_port }} (Vector protocol)
       Metrics:       http://{{ ansible_default_ipv4.address }}:9598/metrics
-      Forwarding to: {{ nanosiem_siem_ip }}:{{ nanosiem_siem_vector_port }} (SIEM Vector)
+      Forwarding to: {{ _aggregator_target }}
       ============================================
 
       Configure Windows Vector agents to point their vector sink at:

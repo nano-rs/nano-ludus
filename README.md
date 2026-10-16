@@ -1,29 +1,36 @@
 # nano SIEM — Ludus Lab
 
 A complete [nano](https://nano.rs) SIEM lab on [Ludus](https://ludus.cloud) in three commands:
-an Active Directory domain, Windows endpoints shipping **Sysmon + Event Logs** through a
-**Vector** pipeline into the full nano open‑core stack (ClickHouse · PostgreSQL · API/search/jobs/web),
-with an optional **Conduit** MITM proxy. Runs entirely on public `ghcr.io/nano-rs` images —
-no registry auth, no building from source.
+an Active Directory domain, Windows endpoints shipping **Sysmon + Event Logs** through
+**Vector 0.59** into an **open‑core nano lean install** (one trusted‑local lake cell, OCSF 1.9 on RustFS) on the range — or straight
+into a **hosted lean tenant** (`<tenant>.ingest.nano.rs`) — with an optional **Conduit** MITM proxy.
 
 ```
 ┌──────────┐ ┌──────────┐ ┌──────────┐
 │   DC01   │ │  SRV01   │ │   WS01   │     Windows: Sysmon + Event Logs
-│ Win2022  │ │ Win2022  │ │  Win11   │     via the Vector agent
+│ Win2022  │ │ Win2022  │ │  Win11   │     via the Vector 0.59 agent
 └────┬─────┘ └────┬─────┘ └────┬─────┘
      │   Vector protocol :9000  │
      └────────────┬─────────────┘
                   ▼
-          ┌───────────────┐
-          │ PROXY / .10.11 │  Vector aggregator + Conduit MITM proxy
+          ┌────────────────┐
+          │ PROXY / .10.11 │  Vector aggregator (the range's shipper) + Conduit
           └───────┬────────┘
-                  │  Vector protocol :6000
-                  ▼
-          ┌───────────────────────────┐
-          │  SIEM / .10.10 (Debian 12) │  nginx :80 → web · API · search
-          │  nano-* + ClickHouse + PG  │  jobs · Vector · Dragonfly
-          └───────────────────────────┘
+                  │  HEC :8088, one sink and one bound token per source
+                  ▼                         (or https://<tenant>.ingest.nano.rs)
+          ┌───────────────────────────────┐
+          │  SIEM / .10.10 (Debian 12)     │  open-core install.sh, lean profile:
+          │  nginx :80 → web · API · search │  one lake cell, OCSF 1.9 on RustFS,
+          │  ingest :8080 :8088 (raw ports local) │  Vector 0.59, Postgres, Dragonfly
+          └───────────────────────────────┘
 ```
+
+> **NAN-3397 / NAN-3491 (Oct 2026):** the SIEM box used to run the retired gen1 stack
+> (`nano_stack`, ClickHouse + UDM). It now runs the open‑core **lean** install (`nano_lean`,
+> `install.sh --non-interactive`, compose profile `lean`); neither the retired `legacy`
+> (ClickHouse) nor the gen1 `lake` profile is used. The aggregator ships over authenticated HEC
+> instead of unauthenticated Vector‑native, and every Vector is pinned to 0.59. The old role is
+> gone from this repo (see git history / `main` before this change).
 
 ## Quick start
 
@@ -43,7 +50,17 @@ ludus range deploy
 ```
 
 Then open **`http://10.<octet>.10.10`** over the Ludus WireGuard VPN (`<octet>` = your range's
-second octet, from `ludus range list`) and visit **`/setup`** to claim the admin account. Done.
+second octet, from `ludus range list`) and log in as `admin@lab.local`. The password is random per
+range (never committed): it is in `~/.nano-ludus/<range_id>/lab-admin-password` (0600) on the Ludus
+controller and in `/root/.nano-lab-admin` (0600) on the SIEM VM.
+
+> **Open-core v1.0.6.** The role runs the product's Bash installer from
+> `nano-rs/nano` `main`, with images pinned to `1.0.6` (configurable).
+> Manual fresh installs use `curl -fsSL https://get.nano.rs | bash`; `sh` is refused.
+> The optional `--tenzir` mode omits Vector and cannot receive this range's HEC
+> senders, so the range uses the default Vector mode.
+> Existing retired installs must be rebuilt into a fresh VM/directory. There is
+> no in-place upgrade from the retired storage engine, and no cutover override.
 
 > Ludus also builds a router from `debian-11-x64-server-template` on every deploy — a standard
 > Ludus install already has it. If a deploy fails instantly saying that template doesn't exist,
@@ -56,20 +73,104 @@ A 5‑VM range on VLAN 10 (`10.<octet>.10.0/24`), all joined to `lab.local`:
 The whole nano app — web, API, search, `/ingest/` — is served through nginx on port 80.
 
 **Log flow:** Sysmon + Windows Event Logs → Vector agent on each Windows box → aggregator (`.11`)
-→ SIEM Vector pipeline → ClickHouse. The agent tags Sysmon events `source_type=windows_sysmon`
-and everything else `source_type=windows_event`, and flattens each event to JSON in `message`.
+→ HEC (raw message payload) → nano's Vector pipeline → OCSF parser → lake cell. The agent tags Sysmon events
+`source_type=windows_sysmon` and everything else `source_type=windows_event`, and flattens each
+event to JSON in `message`. The aggregator forwards each source on its own HEC sink, **with its
+own ingest token**.
 
-Events are searchable immediately as raw `message` + `source_type`. To extract structured
-fields, deploy two parsers from the in‑app Parser Repository (open‑core ships none deployed):
+## Ingest tokens: one per source (NAN-3841)
 
-| Parser | Source type it claims |
-|---|---|
-| **Microsoft Sysmon** | `windows_sysmon` |
-| **Windows Event Log** | `windows_event` |
+nano binds every ingest token to exactly one log source, and the token alone decides where an
+event lands (nano NAN-3806). A `sourcetype` / `X-Source-Type` no longer routes anything; nano
+keeps a differing one only as `claimed_source_type`. An unbound token gets HTTP 401, and there is
+no token that covers several log types. So the aggregator ships `windows_event`,
+`windows_sysmon` and `conduit_proxy` with three tokens, each bound to its own source.
 
-Take the JSON variants — the ones above. The repository also carries XML and rendered-text
-parsers for the same two sources; those read different wire formats and will silently produce
-nothing against this lab's JSON. Deploy exactly one parser per source type.
+On the in‑range open‑core SIEM, the aggregator role issues them itself. It waits for the SIEM's
+API and for each source's log source (the SIEM role deploys the parsers), logs in as the lab
+admin with the range's generated password (the controller copy the SIEM role wrote; override with
+`nano_api_password`, or give an admin API key in `nano_api_key`), and for each forwarded source:
+
+- reuses the token it issued on an earlier deploy, while that token is still active and bound to
+  the source (it keeps the credential ids in `/opt/vector-aggregator/ingest-credentials.json` and
+  the values only in the 0600 files under `secrets/`);
+- otherwise issues a new one, `POST /api/ingest-tokens {name, source_id}`, and revokes the token
+  it replaces;
+- uses a token you set in `nano_ingest_source_tokens` as given. If it is a nano‑issued `nit_`
+  token that is still unbound, it binds it (`POST /api/ingest-tokens/{credential_id}/bind`). If
+  it is bound to a different source, the deploy fails: bindings never change, so revoke it and
+  issue a new one.
+
+After the aggregator starts it posts one small marked event per source with that source's token
+(`nano_ingest_verify_tokens`, on by default). A 401 fails the deploy with what to do: bind the
+token in **Ingestion → Credentials → Bind**, or `POST /api/ingest-tokens/{credential_id}/bind`.
+
+The binding model applies to **HEC :8088 and HTTP :8080 / nginx `/ingest`**.
+The supported open-core API is `GET /api/ingest-tokens` to find a source id,
+then `POST /api/ingest-tokens {"name": "<sender>", "source_id": "<id>"}`.
+The response returns the token once. Authenticate these administration calls with
+an admin API key (`X-API-Key`) or a login session; send the issued ingest token
+with HEC or HTTP. Old APIs without source binding are refused; there is no shared
+install-token fallback.
+
+Raw **Vector :6000 and OTLP :4317/:4318 are unauthenticated, loopback-only**.
+Remote OTLP/HTTP uses `<base>/otlp/v1/logs` (or `/v1/metrics`, `/v1/traces`)
+through nginx with `Authorization: Bearer <install token>`. That OTLP path currently
+accepts only the install token, not the named per-source tokens; a separate upstream
+change is addressing it. The range uses HEC and does not depend on that change.
+
+> An existing range keeps its admin password: on the next deploy the SIEM role copies
+> `/root/.nano-lab-admin` from the SIEM to the controller, so the aggregator logs in with it. To
+> override, set `nano_lean_admin_password` and `nano_api_password` (from a vault, never a
+> committed value), or give the aggregator an admin API key in `nano_api_key`.
+
+**Content:** rules and parsers sync from upstream `main` (OCSF 1.9); parsers are
+not bundled. UDM content is retained only on `legacy/clickhouse`. `nano_lean` imports the OCSF parsers
+named in `nano_lean_parsers` (default `windows_event`, `windows_sysmon`, `conduit_proxy`) from the
+public [nano-rs/parsers](https://github.com/nano-rs/parsers) repository and deploys them, so range
+events are searchable as OCSF (`class_uid`, `process.cmd_line`, `user.name`, …) from the first
+event. Coverage today:
+
+| Range source | source_type | OCSF parser | Coverage |
+|---|---|---|---|
+| Sysmon (Operational) | `windows_sysmon` | `windows_sysmon_ocsf` | EIDs 1, 3, 5, 7, 10, 11, 12, 13, 22, 23 |
+| Security log | `windows_event` | `windows_event_ocsf` | EIDs 4624, 4625, 4634, 4672, 4688 |
+| PowerShell, Defender, System, Application, DNS Server, Directory Service | `windows_event` | `windows_event_ocsf` | **not mapped**: they fall into the parser's Authentication branch (class 3002, activity Other) |
+| Conduit proxy | `conduit_proxy` | `conduit_proxy_ocsf` | HTTP Activity 4002 |
+| Linux auth / syslog | — | `syslog`, `linux_journald`, `linux_auditd` (on upstream `main`) | **not shipped**: no range host runs a Linux shipper yet, so these lanes see nothing |
+
+Additional Linux, firewall or syslog senders are not installed by this blueprint.
+Before adding one, sync its parser from upstream `main`, deploy its log source,
+add its exact route key to `nano_ingest_sources`, and issue a distinct bound token.
+Never reuse the Windows, Sysmon, proxy or install credential for another source.
+
+## Ship to a lean tenant
+
+The aggregator's forward hop is just an endpoint plus token(s). The role issues no tokens on a
+hosted tenant; set, on the proxy VM:
+
+```yaml
+role_vars:
+  nano_ingest_mode: hec
+  nano_ingest_url: "https://<tenant>.ingest.nano.rs"
+  # One credential per source (a source credential is bound to one source_type):
+  nano_ingest_source_tokens:
+    windows_event: "<credential>"
+    windows_sysmon: "<credential>"
+    conduit_proxy: "<credential>"
+```
+
+Issue credentials in the tenant's **Settings → Add data** (protocol **HEC**). Each token is written
+as a 0600 file under `/opt/vector-aggregator/secrets/` (one per source). Vector reads them through its `directory` secret backend (`SECRET[nano_ingest.<key>]`).
+Tokens never go into `vector.toml`, and never into `${VAR}` env interpolation, which Vector ≥ 0.57
+no longer expands by default. Hosted tenants receive at their dedicated Rackspace load balancer
+and collector-v2, landing natively in v2 storage. HEC indexer acknowledgements are enabled for
+both current open-core and hosted tenants; `nano_ingest_indexer_acknowledgements: false` is
+available for endpoints without ACK support. The SIEM VM can be dropped from the range config;
+also remove the aggregator's `depends_on` entry pointing to that VM.
+
+> Co‑locating the aggregator on the SIEM VM? RustFS holds 127.0.0.1:9000/9001 there, so set
+> `aggregator_vector_port` (and the agents' `vector_aggregator_port`) to something else, e.g. 9100.
 
 **Packaging:** this repo is a Ludus Source — the `nanosiem` blueprint lives in `blueprints/nanosiem/`,
 the five `nano_*` roles are vendored under `ansible/roles/`, and `geerlingguy.docker` is declared
@@ -82,11 +183,20 @@ resolve at deploy time (NAN‑2358). Drop or change an `author` and you must upd
 
 | Role (as referenced in `range-config.yml`) | Purpose |
 |---|---|
-| `NanoSIEM.nano_stack` | Full nano SIEM stack on the SIEM box (Docker Compose, GHCR open‑core images) |
-| `NanoSIEM.nano_sysmon` | Sysmon (SwiftOnSecurity config) on Windows + the temp‑redirect workaround |
-| `NanoSIEM.nano_vector_aggregator` | Vector aggregator on the proxy box (agent intake → SIEM) |
-| `NanoSIEM.nano_vector_agent` | Vector agent on Windows (Event Log + Sysmon collection) |
+| `NanoSIEM.nano_lean` | Open‑core nano lean install on the SIEM box (`install.sh`, lean profile) + OCSF parser deploy |
+| `NanoSIEM.nano_sysmon` | Sysmon (SwiftOnSecurity‑based config) on Windows |
+| `NanoSIEM.nano_vector_aggregator` | Vector aggregator on the proxy box: agent intake → nano (HEC, per‑source tokens) |
+| `NanoSIEM.nano_vector_agent` | Vector 0.59 agent on Windows (Event Log + Sysmon collection) |
 | `NanoSIEM.nano_conduit_proxy` | Conduit MITM proxy + CA trust for HTTP(S) traffic capture |
+
+**Checks:** `bash tests/check.sh` runs ansible‑lint, `ansible-playbook --syntax-check`, a policy
+check (no gen1 role deployed, no ClickHouse / gen1 lake profile referenced, every Vector pinned to 0.59 by digest, no token in a world‑readable
+config, no `X-Source-Type`, no shared aggregator token in the blueprint), and renders every scenario in `tests/scenarios/` with the roles' own templates and runs
+`vector validate` (0.59) on the result. Then `tests/provision/run.sh` runs the aggregator's token
+tasks against a mock of nano's ingest‑token API (issue, reuse, rotate, bind, wrong source, missing
+source, 401, rejection of old APIs/shared tokens, a rejected login) and checks no token value reaches the output.
+`tests/hec_wire.py` runs the rendered HEC sender against a loopback mock and verifies
+all three original parser payloads, distinct credentials, gzip and receipt polling.
 
 <details>
 <summary><b>Customize</b> — event channels, VM sizing, single‑box iteration</summary>
@@ -106,7 +216,7 @@ role_vars:
     - "Microsoft-Windows-Windows Defender/Operational"
 ```
 
-**Resource sizing** — adjust `ram_gb` / `cpus`. Minimums: SIEM 12 GB / 4 CPU (16/8 recommended) ·
+**Resource sizing** — adjust `ram_gb` / `cpus`. Minimums: SIEM 12 GiB visible to Docker / 4 CPU (16/8 recommended; `install.sh` refuses less than 12 GiB) ·
 aggregator 2 GB / 2 CPU · DC 4 GB / 2 CPU · workstation 4 GB / 2 CPU.
 
 **Buffering and backpressure** — every Vector hop (agent → aggregator → SIEM) writes to a disk
@@ -200,13 +310,13 @@ if (-not $loaded) { [gc]::Collect(); reg unload "HKU\$sid" | Out-Null }
 
 ### `docker compose pull` times out resolving a registry
 The Ludus lab DNS forwarder resolves fine at idle but can choke under a fully‑parallel image
-pull. The `nano_stack` / aggregator / conduit roles already **serialize the pull**
+pull. The `nano_lean` / aggregator / conduit roles already **serialize the pull**
 (`COMPOSE_PARALLEL_LIMIT=1`) and **retry** it, so this is mostly handled — if it still fails after
 the retries, just re‑run `ludus range deploy` (it resumes).
 
 ### Search throws `crypto.randomUUID is not a function` in the browser
 `crypto.randomUUID` only exists in a **secure context**. Over plain `http://<ip>` it's undefined.
-Fixed in recent `nano-web` images — make sure you're on `:latest`. For real use, front the SIEM
+Fixed in recent `nano-web` images — use a current lean release. For real use, front the SIEM
 with **HTTPS** anyway (other browser security gates apply over plain HTTP).
 
 ### The deploy "keeps failing on the same box" after you fixed it

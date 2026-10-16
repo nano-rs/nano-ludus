@@ -1,0 +1,10 @@
+---
+# Current open-core HEC with separate bound credentials.
+render_parts: [aggregator, agent, conduit]
+nano_ingest_mode: hec
+nanosiem_siem_ip: 10.5.10.10
+nano_ingest_source_tokens:
+  windows_event: TESTTOKEN-winevent-0123456789abcdef
+  windows_sysmon: TESTTOKEN-sysmon-0123456789abcdef
+  conduit_proxy: TESTTOKEN-conduit-0123456789abcdef
+vector_aggregator_ip: 10.5.10.11
