@@ -1,0 +1,11 @@
+---
+# NAN-3397: ansible-lint for the vendored roles (tests/check.sh).
+# The roles' variable names are their public interface (range configs set
+# them), so the role-prefix naming rule is not applied.
+skip_list:
+  - var-naming[no-role-prefix]
+  - name[casing]
+warn_list:
+  - yaml[line-length]
+exclude_paths:
+  - blueprints/

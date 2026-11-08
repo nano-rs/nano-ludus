@@ -1,0 +1,33 @@
+---
+# Run the aggregator role's token tasks (ingest_facts -> ingest_tokens ->
+# ingest_secrets -> verify_tokens) on localhost against tests/provision/mock_nano.py.
+# Driven by tests/provision/run.sh with -e @<case vars> -e work_dir=<dir>.
+- name: Provision per-source ingest tokens against the mock nano
+  hosts: localhost
+  gather_facts: false
+  vars:
+    roles_dir: "{{ playbook_dir }}/../../ansible/roles"
+    aggregator_deploy_dir: "{{ work_dir }}"
+  tasks:
+    - name: Load the aggregator role defaults (case vars override them)
+      ansible.builtin.include_vars:
+        file: "{{ roles_dir }}/nano_vector_aggregator/defaults/main.yml"
+
+    - name: Validate and derive the ingest facts
+      ansible.builtin.include_tasks: "{{ roles_dir }}/nano_vector_aggregator/tasks/ingest_facts.yml"
+
+    - name: Issue the per-source tokens
+      ansible.builtin.include_tasks: "{{ roles_dir }}/nano_vector_aggregator/tasks/ingest_tokens.yml"
+      vars:
+        _aggregator_secrets_dir: "{{ work_dir }}/secrets"
+        _aggregator_state_file: "{{ work_dir }}/ingest-credentials.json"
+      when: _nano_ingest_provision | bool
+
+    - name: Write the token files
+      ansible.builtin.include_tasks: "{{ roles_dir }}/nano_vector_aggregator/tasks/ingest_secrets.yml"
+      vars:
+        _aggregator_secrets_dir: "{{ work_dir }}/secrets"
+
+    - name: Check each token against the mock HEC
+      ansible.builtin.include_tasks: "{{ roles_dir }}/nano_vector_aggregator/tasks/verify_tokens.yml"
+      when: nano_ingest_verify_tokens | bool

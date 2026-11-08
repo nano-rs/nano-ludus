@@ -1,223 +1,237 @@
-# nano SIEM — Ludus Lab
+# nano v2 — Ludus Lab
 
-A complete [nano](https://nano.rs) SIEM lab on [Ludus](https://ludus.cloud) in three commands:
-an Active Directory domain, Windows endpoints shipping **Sysmon + Event Logs** through a
-**Vector** pipeline into the full nano open‑core stack (ClickHouse · PostgreSQL · API/search/jobs/web),
-with an optional **Conduit** MITM proxy. Runs entirely on public `ghcr.io/nano-rs` images —
-no registry auth, no building from source.
+A complete [nano](https://nano.rs) v2 SIEM lab on [Ludus](https://ludus.cloud):
+an Active Directory domain, three Windows endpoints, Sysmon and Windows Event
+Logs, a Vector aggregator, OCSF parsers, and the nano open-core stack backed by
+ClickHouse. An optional Conduit proxy adds HTTP activity telemetry.
 
+```text
+DC01 ─┐
+SRV01 ├─ Vector 0.61 :9000 ─► proxy / aggregator ─ HEC :8088 ─► nano v2
+WS01 ─┘                         + Conduit                         OCSF / ClickHouse
 ```
-┌──────────┐ ┌──────────┐ ┌──────────┐
-│   DC01   │ │  SRV01   │ │   WS01   │     Windows: Sysmon + Event Logs
-│ Win2022  │ │ Win2022  │ │  Win11   │     via the Vector agent
-└────┬─────┘ └────┬─────┘ └────┬─────┘
-     │   Vector protocol :9000  │
-     └────────────┬─────────────┘
-                  ▼
-          ┌───────────────┐
-          │ PROXY / .10.11 │  Vector aggregator + Conduit MITM proxy
-          └───────┬────────┘
-                  │  Vector protocol :6000
-                  ▼
-          ┌───────────────────────────┐
-          │  SIEM / .10.10 (Debian 12) │  nginx :80 → web · API · search
-          │  nano-* + ClickHouse + PG  │  jobs · Vector · Dragonfly
-          └───────────────────────────┘
-```
+
+The aggregator uses one source-bound ingest token for each route:
+`windows_event`, `windows_sysmon`, and `conduit_proxy`. The token determines
+the nano log source; the sender's `sourcetype` is informational.
 
 ## Quick start
 
-You need a running **Ludus** server with the CLI connected (`ludus range list` works).
-New to Ludus? Start with the [install guide](https://docs.ludus.cloud/docs/intro).
+You need a running Ludus server with the CLI connected
+(`ludus range list` works).
 
 ```bash
-# 1. Build the templates this lab uses (skip any already BUILT; Windows ones take ~1–2 hr each)
+# Build the templates if the server does not already have them.
+ludus templates build -n debian-11-x64-server-template
 ludus templates build -n debian-12-x64-server-template
 ludus templates build -n win2022-server-x64-template
 ludus templates build -n win11-22h2-x64-enterprise-template
 
-# 2. Add this source, apply the blueprint, deploy
-ludus source add https://github.com/nano-rs/nano-ludus
+# Add every source artifact, apply the blueprint, and deploy.
+ludus source add https://github.com/nano-rs/nano-ludus --all
 ludus blueprint apply nano-rs-nano-ludus/nanosiem
 ludus range deploy
 ```
 
-Then open **`http://10.<octet>.10.10`** over the Ludus WireGuard VPN (`<octet>` = your range's
-second octet, from `ludus range list`) and visit **`/setup`** to claim the admin account. Done.
+The Debian 11 template is required by the Ludus router even though the blueprint
+does not name it.
 
-> Ludus also builds a router from `debian-11-x64-server-template` on every deploy — a standard
-> Ludus install already has it. If a deploy fails instantly saying that template doesn't exist,
-> run `ludus templates build -n debian-11-x64-server-template` first.
+The SIEM VM must expose AVX2 for ClickHouse 26.6+. The role checks this before
+installing anything and reports the Proxmox CPU-model remediation (`host` or
+`x86-64-v3`) if the feature is hidden.
 
-## What you get
+Open `http://10.<range-octet>.10.10` over the Ludus WireGuard connection and
+log in as `admin@lab.local`. The password is generated once per range and is
+never committed. It is stored only on the SIEM VM, mode 0600, in
+`/root/.nano-lab-admin-password`; `/root/.nano-lab-admin` records the login URL
+and email for operator recovery. The aggregator reads the password through an
+Ansible delegated task. Nothing writes beneath the Ludus controller's
+read-only home.
 
-A 5‑VM range on VLAN 10 (`10.<octet>.10.0/24`), all joined to `lab.local`:
-**SIEM** `.10` · **proxy/aggregator** `.11` · **DC01** `.20` · **SRV01** `.21` · **WS01** `.30`.
-The whole nano app — web, API, search, `/ingest/` — is served through nginx on port 80.
+## v2 installer contract
 
-**Log flow:** Sysmon + Windows Event Logs → Vector agent on each Windows box → aggregator (`.11`)
-→ SIEM Vector pipeline → ClickHouse. The agent tags Sysmon events `source_type=windows_sysmon`
-and everything else `source_type=windows_event`, and flattens each event to JSON in `message`.
+`NanoSIEM.nano_stack` checks out the public
+[`nano-rs/nano`](https://github.com/nano-rs/nano) source and runs its
+`install.sh` with the documented environment:
 
-Events are searchable immediately as raw `message` + `source_type`. To extract structured
-fields, deploy two parsers from the in‑app Parser Repository (open‑core ships none deployed):
+- `NANO_ADMIN_EMAIL`, `NANO_ADMIN_NAME`, and `NANO_ADMIN_PASSWORD`
+- `NANO_BASE_URL`
+- `NANO_REPO_URL`, `NANO_BRANCH`, and `NANO_INSTALL_DIR`
+- `NANO_SCHEMA_PROFILE=ocsf`
 
-| Parser | Source type it claims |
-|---|---|
-| **Microsoft Sysmon** | `windows_sysmon` |
-| **Windows Event Log** | `windows_event` |
+There is no private installer flag, pseudo-TTY, or role-side stack patch. The
+installer owns `.env`, image digest verification, resource sizing, database
+migration, first-admin creation, and stack startup.
 
-Take the JSON variants — the ones above. The repository also carries XML and rendered-text
-parsers for the same two sources; those read different wire formats and will silently produce
-nothing against this lab's JSON. Deploy exactly one parser per source type.
-
-**Packaging:** this repo is a Ludus Source — the `nanosiem` blueprint lives in `blueprints/nanosiem/`,
-the five `nano_*` roles are vendored under `ansible/roles/`, and `geerlingguy.docker` is declared
-in `requirements.yml`.
-
-Each role declares `author: NanoSIEM` in its `meta/main.yml`, so ansible‑galaxy installs it as
-`NanoSIEM.<role>` — that is the name the range config must use. Referencing a role bare fails to
-resolve at deploy time (NAN‑2358). Drop or change an `author` and you must update
-`range-config.yml` to match.
-
-| Role (as referenced in `range-config.yml`) | Purpose |
-|---|---|
-| `NanoSIEM.nano_stack` | Full nano SIEM stack on the SIEM box (Docker Compose, GHCR open‑core images) |
-| `NanoSIEM.nano_sysmon` | Sysmon (SwiftOnSecurity config) on Windows + the temp‑redirect workaround |
-| `NanoSIEM.nano_vector_aggregator` | Vector aggregator on the proxy box (agent intake → SIEM) |
-| `NanoSIEM.nano_vector_agent` | Vector agent on Windows (Event Log + Sysmon collection) |
-| `NanoSIEM.nano_conduit_proxy` | Conduit MITM proxy + CA trust for HTTP(S) traffic capture |
-
-<details>
-<summary><b>Customize</b> — event channels, VM sizing, single‑box iteration</summary>
-
-All edits go in `blueprints/nanosiem/range-config.yml`.
-
-**Event‑log channels** — override `vector_eventlog_channels` per host:
+The intended release ref is `v2.0.0`. That tag was not public when this change
+was prepared, so the role defaults to the public mirror's `main` fallback and
+lets `install.sh` read the release from `images.lock`. After the tag is public,
+pin both values in `blueprints/nanosiem/range-config.yml`:
 
 ```yaml
-role_vars:
-  vector_eventlog_channels:
-    - "Application"
-    - "System"
-    - "Security"
-    - "Microsoft-Windows-Sysmon/Operational"
-    - "Microsoft-Windows-PowerShell/Operational"
-    - "Microsoft-Windows-Windows Defender/Operational"
+nanosiem_ref: "v2.0.0"
+nanosiem_version: "2.0.0"
 ```
 
-**Resource sizing** — adjust `ram_gb` / `cpus`. Minimums: SIEM 12 GB / 4 CPU (16/8 recommended) ·
-aggregator 2 GB / 2 CPU · DC 4 GB / 2 CPU · workstation 4 GB / 2 CPU.
+The role refuses a source whose installer does not identify the v2 product line
+and OCSF/ClickHouse profile contract. It imports and deploys these OCSF parsers
+from `nano-rs/parsers` after the API becomes healthy:
 
-**Buffering and backpressure** — every Vector hop (agent → aggregator → SIEM) writes to a disk
-buffer, so a SIEM restart does not lose events. When a buffer *fills*, the default is to shed the
-newest events rather than block:
-
-| Variable | Default | Role |
+| Range lane | Route key | Parser |
 | --- | --- | --- |
-| `vector_buffer_max_bytes` / `vector_buffer_when_full` | 512 MB / `drop_newest` | agent |
-| `aggregator_buffer_max_bytes` / `aggregator_buffer_when_full` | 1 GB / `drop_newest` | aggregator |
-| `conduit_buffer_max_bytes` / `conduit_buffer_when_full` | 512 MB / `drop_newest` | conduit proxy |
+| Windows Event Log | `windows_event` | `parsers-ocsf/windows_event/parser.yaml` |
+| Sysmon | `windows_sysmon` | `parsers-ocsf/windows_sysmon/parser.yaml` |
+| Conduit proxy | `conduit_proxy` | `parsers-ocsf/conduit_proxy/parser.yaml` |
 
-Disk buffers have a hard floor of 256 MiB — `max_size` must be at least `268435488` bytes, and
-Vector refuses to start below it, so a too-small override fails the deploy rather than the lab.
+## Source-bound ingest tokens
 
-Setting any of these to `block` trades collection for durability, and the trade is worse than it
-sounds: one hop that stops draining applies backpressure to every hop above it — including the
-Windows Event Log readers — so the whole lab stops collecting at once. Restarting does not clear it,
-because a restart preserves the backlog rather than draining it: collection stays frozen for as long
-as the downstream hop cannot accept events. (The buffer is not permanently deadlocked — once
-downstream recovers it drains normally, and you never need to delete a buffer directory.)
+nano v2 binds each ingest token to exactly one log source. The aggregator role:
 
-Prefer `drop_newest` and watch the aggregator's buffer instead:
+1. waits for nano and the three deployed parser routes;
+2. logs in with the per-range admin password, or an operator-provided admin API
+   key;
+3. issues `POST /api/ingest-tokens {"name": ..., "source_id": ...}` once per
+   source;
+4. stores only credential IDs in
+   `/opt/vector-aggregator/ingest-credentials.json`;
+5. stores token values in separate mode-0600 files under
+   `/opt/vector-aggregator/secrets/`;
+6. reads those files through Vector's directory secret backend; and
+7. sends one marked HEC event per source to prove each credential is accepted.
+
+A valid token from an earlier deploy is reused. If its local secret file is
+lost, the role creates a replacement before revoking the old credential. A
+token bound to another source is rejected because bindings never change.
+
+Vector config files never contain token values and do not rely on environment
+interpolation. The latter is disabled by default in modern Vector releases.
+
+To supply credentials yourself:
+
+```yaml
+nano_ingest_source_tokens:
+  windows_event: "<token bound to windows_event>"
+  windows_sysmon: "<token bound to windows_sysmon>"
+  conduit_proxy: "<token bound to conduit_proxy>"
+```
+
+A single shared token is intentionally unsupported.
+
+## Vector versions
+
+The v2 server compose uses nano's feature-minimized Vector fork. That server
+image omits the Vector and HEC sinks required by the Ludus edge hops, so the
+aggregator and Conduit sidecar use the full upstream Alpine build at the same
+0.61 base version, pinned to its multi-architecture digest. Alpine also
+provides the small wget/awk tools used by the aggregator healthcheck:
+
+```text
+timberio/vector:0.61.0-alpine
+sha256:3bb7ed5152910ed51729e256937b1d8a4bf67ff624e9d565e8e5877bffd015c7
+```
+
+The Windows collector uses the checksum-pinned official Vector 0.61.0 archive.
+It needs only the stable `windows_event_log` source and Vector sink; nano's
+server-specific changes remain in the Linux image.
+
+## Topology and roles
+
+The range is five VMs on VLAN 10:
+
+| Address suffix | VM | Purpose |
+| --- | --- | --- |
+| `.10` | SIEM | nano v2 open core, OCSF, ClickHouse, Postgres, Vector, nginx |
+| `.11` | proxy | Vector aggregator plus Conduit |
+| `.20` | DC01 | Windows Server domain controller, Sysmon and Event Logs |
+| `.21` | SRV01 | Windows member server, Sysmon and Event Logs |
+| `.30` | WS01 | Windows 11 workstation, Sysmon and Event Logs |
+
+The vendored roles are:
+
+| Role | Purpose |
+| --- | --- |
+| `NanoSIEM.nano_stack` | Run the v2 open-core installer and deploy the OCSF parsers |
+| `NanoSIEM.nano_sysmon` | Install the observation-only Sysmon configuration |
+| `NanoSIEM.nano_vector_agent` | Collect Windows Event Logs and Sysmon with Vector 0.61 |
+| `NanoSIEM.nano_vector_aggregator` | Receive Vector events and forward source-bound HEC |
+| `NanoSIEM.nano_conduit_proxy` | Capture proxy activity and send it to the aggregator |
+
+## Local checks
 
 ```bash
-# the aggregator's own sink buffer (metrics carry the nanosiem_aggregator_ namespace)
-curl -s http://<proxy-ip>:9598/metrics | grep -E 'buffer_(byte_size|max_byte_size|discarded_events)'
-docker inspect vector-aggregator --format '{{json .State.Health}}'   # red at >=90% full
+bash tests/check.sh
 ```
 
-That endpoint covers the **aggregator hop only**. The Windows agent sends its internal metrics to a
-console sink (read them in the Vector service log on the endpoint), and the Conduit sidecar exposes
-no metrics endpoint at all — so drops at those two hops are not visible from the proxy box.
+The gate:
 
-**Iterate on one box** (after re‑syncing the source — see *Editing the lab* below):
+- runs `ansible-lint` and an Ansible syntax check over every role;
+- enforces the v2/OCSF/ClickHouse policy and exact Vector pins;
+- forbids the retired role/profile artifacts and shared aggregator tokens;
+- renders every Vector scenario from the actual role templates;
+- validates the rendered configs with the v2 Vector image;
+- exercises the source-bound token lifecycle against a loopback mock API; and
+- sends real rendered HEC payloads to a loopback receiver, checking distinct
+  credentials, raw parser payloads, compression, and HEC acknowledgements.
+
+## Customization
+
+Edit `blueprints/nanosiem/range-config.yml`.
+
+Event channels are controlled per Windows host:
+
+```yaml
+vector_eventlog_channels:
+  - Application
+  - System
+  - Security
+  - Microsoft-Windows-Sysmon/Operational
+  - Microsoft-Windows-PowerShell/Operational
+  - Microsoft-Windows-Windows Defender/Operational
+```
+
+Each Vector hop has a disk buffer. The default `when_full = "drop_newest"`
+keeps endpoint collection moving when downstream is unavailable. Setting
+`block` propagates backpressure to the Windows Event Log readers.
+
+| Variables | Default | Role |
+| --- | --- | --- |
+| `vector_buffer_max_bytes` / `vector_buffer_when_full` | 512 MiB / `drop_newest` | Windows agent |
+| `aggregator_buffer_max_bytes` / `aggregator_buffer_when_full` | 1 GiB per source / `drop_newest` | aggregator |
+| `conduit_buffer_max_bytes` / `conduit_buffer_when_full` | 512 MiB / `drop_newest` | Conduit sidecar |
+
+The aggregator exposes its internal metrics on `:9598`; its container health
+check becomes unhealthy when the fullest sink buffer reaches the configured
+threshold.
+
+## Editing the source
+
+Ludus deploys the server's cached source snapshot, not files from a local clone.
+After changes, resync and reapply:
 
 ```bash
-ludus range deploy -t user-defined-roles --limit <RANGE>-nanosiem   # just the SIEM
-ludus range deploy -t user-defined-roles --limit <RANGE>-dc01       # just DC01's roles
-```
-</details>
+# Published git source
+ludus source sync nano-rs-nano-ludus
+ludus source add nano-rs-nano-ludus --all --force
 
-<details>
-<summary><b>Editing the lab</b> — re‑sync the source after any change</summary>
+# Or a local checkout
+ludus source update nano-rs-nano-ludus -d .
 
-`ludus range deploy` runs the copy of each role the **Ludus server** holds from the source
-snapshot, *not* the files on your disk. After editing anything under `ansible/roles/` or the
-range config you **must** re‑sync first, then re‑apply + deploy:
-
-- **git source:** push your commit, then `ludus source sync nano-rs-nano-ludus`
-- **local dev source:** `ludus source update nano-rs-nano-ludus -d .`
-
-Then `ludus blueprint apply nano-rs-nano-ludus/nanosiem` + `ludus range deploy`. Forgetting the
-re‑sync is the single most common "but I fixed that already" trap.
-
-For local development you can add the source straight from a clone instead of GitHub:
-`ludus source add -d . --id nano-rs-nano-ludus`.
-</details>
-
-<details>
-<summary><b>Troubleshooting</b> — the real failure modes we hit building this lab</summary>
-
-Most are handled automatically by the roles; this is what they are and what to do if one bites.
-`<RANGE>` below = your range ID, the prefix on every VM name (`ludus range list`).
-
-### Windows `TASK [Reboot]` → `winrm … the specified credentials were rejected`
-A **Ludus base‑config** task (not a nano role) sometimes fails its WinRM auth on a freshly
-provisioned Windows box — most often the **Win11 workstation** — while the Server‑2022 boxes
-reboot fine. It's a Ludus platform reboot/credential race, one layer below this lab.
-
-- **Retry it:** `ludus range deploy --limit <RANGE>-ws01` — a clean retry usually gets past the
-  reboot and continues into the roles.
-- The roles themselves are fine: `ludus range deploy -t user-defined-roles --limit <RANGE>-ws01`
-  runs **only** the role stage (skipping the base reboot) and installs the agent cleanly.
-
-### `Gathering Facts` fails with `Add-CSharpType … could not find file …\Temp\…dll`
-Some stock Windows Server 2022 templates silently strip freshly‑compiled executables from the
-per‑user temp, which breaks Ansible's C# module compilation. **The `nano_sysmon` role works
-around this automatically** (it redirects `localuser`'s TEMP to `C:\Windows\Temp` via a `raw`
-task before anything else). If a box still fails on its *very first* `Gathering Facts`, set it by
-hand over RDP and re‑deploy:
-
-```powershell
-$sid = (New-Object System.Security.Principal.NTAccount("localuser")).Translate([System.Security.Principal.SecurityIdentifier]).Value
-$loaded = Test-Path "Registry::HKEY_USERS\$sid"
-if (-not $loaded) { reg load "HKU\$sid" "C:\Users\localuser\NTUSER.DAT" | Out-Null }
-New-ItemProperty "Registry::HKEY_USERS\$sid\Environment" -Name TEMP -Value "C:\Windows\Temp" -PropertyType ExpandString -Force
-New-ItemProperty "Registry::HKEY_USERS\$sid\Environment" -Name TMP  -Value "C:\Windows\Temp" -PropertyType ExpandString -Force
-if (-not $loaded) { [gc]::Collect(); reg unload "HKU\$sid" | Out-Null }
+ludus blueprint apply nano-rs-nano-ludus/nanosiem
+ludus range deploy
 ```
 
-### `docker compose pull` times out resolving a registry
-The Ludus lab DNS forwarder resolves fine at idle but can choke under a fully‑parallel image
-pull. The `nano_stack` / aggregator / conduit roles already **serialize the pull**
-(`COMPOSE_PARALLEL_LIMIT=1`) and **retry** it, so this is mostly handled — if it still fails after
-the retries, just re‑run `ludus range deploy` (it resumes).
+## Troubleshooting
 
-### Search throws `crypto.randomUUID is not a function` in the browser
-`crypto.randomUUID` only exists in a **secure context**. Over plain `http://<ip>` it's undefined.
-Fixed in recent `nano-web` images — make sure you're on `:latest`. For real use, front the SIEM
-with **HTTPS** anyway (other browser security gates apply over plain HTTP).
-
-### The deploy "keeps failing on the same box" after you fixed it
-You almost certainly edited a role but didn't re‑sync the source (see *Editing the lab* above).
-`ludus range deploy` uses the server‑cached role from the source snapshot — re‑sync, re‑apply,
-then deploy.
-</details>
+- A first-deploy WinRM error immediately after a Windows rename is a known
+  Ludus 2.2.1 race. Re-run the range deploy; completed hosts are skipped.
+- If a role change appears to have no effect, resync the Ludus source before
+  redeploying.
+- Pulls are serialized with `COMPOSE_PARALLEL_LIMIT=1` because the range DNS
+  forwarder can time out under many simultaneous registry lookups.
+- The SIEM installer's complete output is kept mode 0600 at
+  `/root/nano-v2-install.log`; Ansible does not echo it because it may contain
+  sensitive setup context.
 
 ## License
 
-[Apache‑2.0](LICENSE).
-
-> Internal Ansible variables keep a `nanosiem_*` prefix (they map to the `nanosiem` database/users
-> the images expect) — that's intentional, not a typo.
+[Apache-2.0](LICENSE)

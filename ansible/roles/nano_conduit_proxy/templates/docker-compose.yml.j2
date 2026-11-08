@@ -69,7 +69,7 @@ services:
 
   # Vector sidecar — tails conduit logs and ships to the local aggregator
   conduit-vector:
-    image: timberio/vector:latest-alpine
+    image: {{ conduit_vector_image }}
     container_name: conduit-vector
     security_opt:
       - no-new-privileges:true

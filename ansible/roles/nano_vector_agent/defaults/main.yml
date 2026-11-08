@@ -7,10 +7,12 @@ vector_aggregator_ip: ""  # REQUIRED - set in role_vars
 vector_aggregator_port: 9000
 
 # ---- Vector version ----
-# Using nightly build — windows_event_log source merged 2026-03-13, not yet in a stable release.
-# Switch to a stable version+URL once 0.55.0+ ships with the windows_event_log source.
-vector_version: "nightly"
-vector_msi_url: "https://packages.timber.io/vector/nightly/latest/vector-nightly-x64.msi"
+# v2 ships the nano Vector fork based on 0.61.0. The Windows collector uses
+# the official 0.61.0 archive: it needs only windows_event_log and the Vector
+# sink, while nano-specific server changes live in the Linux ingest image.
+vector_version: "0.61.0"
+vector_archive_url: "https://github.com/vectordotdev/vector/releases/download/v{{ vector_version }}/vector-{{ vector_version }}-x86_64-pc-windows-msvc.zip"
+vector_archive_sha256: "6a04e833f9a91f874688e8087d768f5cb35d40e3271c87df6258e271915d0f49"
 
 # ---- Windows Event Log channels ----
 vector_eventlog_channels:

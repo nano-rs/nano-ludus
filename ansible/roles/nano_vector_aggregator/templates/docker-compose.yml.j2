@@ -1,11 +1,9 @@
-version: '3.8'
-
 # Vector Aggregator - Receives from Windows agents, forwards to SIEM
 # Deployed by Ludus Ansible Role
 
 services:
   vector-aggregator:
-    image: timberio/vector:latest-alpine
+    image: {{ aggregator_vector_image }}
     container_name: vector-aggregator
     security_opt:
       - no-new-privileges:true
@@ -20,6 +18,8 @@ services:
       - "8686:8686"
     volumes:
       - ./config/vector.toml:/etc/vector/vector.toml:ro
+      # NAN-3397: ingest tokens (0600 files), read via Vector's directory secret backend
+      - ./secrets:/etc/vector/secrets:ro
       - ./healthcheck.sh:/usr/local/bin/nano-healthcheck.sh:ro
       - vector-aggregator-data:/var/lib/vector
     command: ["--config", "/etc/vector/vector.toml"]

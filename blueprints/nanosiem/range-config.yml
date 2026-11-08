@@ -2,9 +2,9 @@
 #
 # Topology:
 #   [Win DC01]  ─┐  event logs ──► Vector agent ──┐
-#   [Win SRV01] ─┤  HTTP traffic ──► Conduit ───┤──► [Proxy/Aggregator] ──► [SIEM] ──► ClickHouse
-#   [Win WS01]  ─┘  (MITM + CA trust)          │    (Vector + Conduit)       (Debian)
-#                                                └──► (Debian .10.11)
+#   [Win SRV01] ─┤  HTTP traffic ──► Conduit ───┤──► [Proxy/Aggregator] ──HEC──► [SIEM]
+#   [Win WS01]  ─┘  (MITM + CA trust)          │    (Vector + Conduit)          (v2 OCSF)
+#                                                └──► (Debian .10.11)             (ClickHouse)
 #
 # VLAN 10: 10.x.10.0/24 (where x = your Ludus range's second octet)
 #
@@ -28,11 +28,14 @@
 # If you rename a role or drop its `author`, update BOTH sides or this breaks
 # again silently.
 #
-# The SIEM box pulls the public open-core images from ghcr.io/nano-rs (no auth).
+# The SIEM role generates one random admin password per range and stores it on
+# that VM. The aggregator reads it through an Ansible delegated task to issue
+# one source-bound ingest token for each parser route; no password or shared
+# ingest token is committed here or written beneath the controller's home.
 
 ludus:
   # =========================================================================
-  # SIEM Box - Full NanoSIEM stack (API, Search, ClickHouse, Postgres, Vector)
+  # SIEM Box - nano v2 open core: OCSF, ClickHouse, Postgres, Vector
   # =========================================================================
   - vm_name: "{{ range_id }}-nanosiem"
     hostname: "{{ range_id }}-SIEM"
@@ -48,16 +51,18 @@ ludus:
     role_vars:
       docker_users:
         - localuser
-      # Images default to ghcr.io/nano-rs/nano-*:latest (public, no auth).
-      # Pin a release by uncommenting:
-      # nanosiem_version: "v0.1.598"
-      #
-      # --- Lab defaults (change for production) ---
-      nanosiem_dev_mode: "true"
-      nanosiem_vector_auth_token: "nanosiem-lab-token"
+      # The public v2.0.0 tag is the intended pin. Until it exists, main is the
+      # documented public-mirror fallback and install.sh reads its images.lock.
+      nanosiem_repo_url: "https://github.com/nano-rs/nano.git"
+      nanosiem_ref: "main"
+      nanosiem_schema_profile: ocsf
+      nanosiem_parsers:
+        - windows_event
+        - windows_sysmon
+        - conduit_proxy
 
   # =========================================================================
-  # Proxy / Aggregator - Vector aggregator + general proxy services
+  # Proxy / Aggregator - Vector agent intake, source-bound HEC + Conduit
   # =========================================================================
   - vm_name: "{{ range_id }}-proxy"
     hostname: "{{ range_id }}-PROXY"
@@ -69,15 +74,19 @@ ludus:
     linux: true
     roles:
       - geerlingguy.docker
-      - NanoSIEM.nano_vector_aggregator
+      - name: NanoSIEM.nano_vector_aggregator
+        depends_on:
+          - vm_name: "{{ range_id }}-nanosiem"
+            role: NanoSIEM.nano_stack
       - NanoSIEM.nano_conduit_proxy
     role_vars:
       docker_users:
         - localuser
-      # Points to the SIEM box above (last octet 10)
+      # HEC target on the SIEM box. The role issues one token bound to each of
+      # windows_event, windows_sysmon and conduit_proxy after their parsers are
+      # deployed; source identity comes from the token, not sourcetype.
+      nano_ingest_mode: hec
       nanosiem_siem_ip: "10.{{ range_second_octet }}.10.10"
-      nanosiem_siem_vector_port: 6000
-      nanosiem_vector_auth_token: "nanosiem-lab-token"
       # Conduit proxy — pulls from ghcr.io/the2dl/conduit-{proxy,api}:latest
 
   # =========================================================================

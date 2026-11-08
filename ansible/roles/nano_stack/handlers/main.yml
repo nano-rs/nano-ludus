@@ -1,5 +1,6 @@
 ---
-- name: restart nanosiem
-  ansible.builtin.shell: |
-    cd {{ nanosiem_deploy_dir }} && docker compose up -d --remove-orphans
+- name: Restart nano v2
+  ansible.builtin.command:
+    cmd: docker compose -f docker-compose.opensource.yml up -d
+    chdir: "{{ nanosiem_install_dir }}"
   changed_when: true
