@@ -1,5 +1,5 @@
 ---
-# In-range open-core lean SIEM with per-source tokens (NAN-3841, the blueprint
+# In-range v2 open-core SIEM with per-source tokens (the blueprint
 # default on a nano with NAN-3806): one token bound to each source, no shared
 # token. This is what ingest_tokens.yml hands the template after issuing them.
 render_parts: [aggregator]

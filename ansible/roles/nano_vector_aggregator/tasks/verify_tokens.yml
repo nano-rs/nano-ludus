@@ -4,7 +4,7 @@
 # through the aggregator, so a refusal is attributed to the right token).
 #
 # A current open-core nano answers 401 for a token that is not bound to a log
-# source; a hosted lean tenant answers 401/403 for a wrong credential.
+# source; a hosted tenant answers 401/403 for a wrong credential.
 # Inputs: _nano_ingest_url, _nano_ingest_sources, _nano_ingest_model (when the
 # role provisioned), _nano_ingest_credentials.
 - name: Send one marked event per source with its own token

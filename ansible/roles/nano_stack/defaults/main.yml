@@ -1,0 +1,44 @@
+---
+# nano v2 open-core install on the range SIEM box.
+#
+# The role runs the product's own install.sh with its documented environment.
+# It does not vendor or patch the compose stack.
+
+# ---- Source ----
+nanosiem_repo_url: "https://github.com/nano-rs/nano.git"
+# The public mirror intentionally publishes no git tags. main carries the v2
+# source, while NANO_VERSION pins the release recorded in images.lock.
+nanosiem_ref: "main"
+nanosiem_version: "2.0.0"
+
+nanosiem_source_dir: /opt/nano-v2-source
+nanosiem_install_dir: /opt/nano
+# The pre-v2 Ludus role used this compose file and fixed nano-* container
+# names. Stop that exact stack before install.sh starts v2; do not remove its
+# volumes, so an operator can recover the old lab data if needed.
+nanosiem_legacy_compose_file: /opt/nanosiem/docker-compose.yml
+nanosiem_install_log: /root/nano-v2-install.log
+nanosiem_install_marker: /root/.nano-lab-v2-installed
+nanosiem_install_env: {}
+nanosiem_rerun_install: false
+
+# ---- Admin account ----
+nanosiem_base_url: "http://{{ ansible_default_ipv4.address }}"
+nanosiem_admin_email: "admin@lab.local"
+nanosiem_admin_name: "Lab Admin"
+# Empty = generate once per range. Never put a real password in this public repo.
+nanosiem_admin_password: ""
+nanosiem_admin_password_file: /root/.nano-lab-admin-password
+nanosiem_admin_file: /root/.nano-lab-admin
+
+# ---- Profile and network ----
+nanosiem_schema_profile: ocsf
+# Remote authenticated ingest only. Raw OTLP and Vector native remain loopback.
+nanosiem_firewall_ports: [80, 8080, 8088]
+
+# ---- Parsers ----
+# OCSF parsers required by the range. Empty list deploys none.
+nanosiem_parsers:
+  - windows_event
+  - windows_sysmon
+  - conduit_proxy

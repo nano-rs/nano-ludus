@@ -51,8 +51,8 @@
     msg: >-
       The nano API at {{ _nano_api_url }} rejected the login for
       {{ nano_api_email }} (HTTP {{ _nano_api_login.status }}). Check the range's lab admin
-      password in {{ nano_lab_admin_password_file }} on the controller matches the
-      SIEM's (/root/.nano-lab-admin there), or set nano_api_password / nano_api_key
+      password in {{ nano_lab_admin_password_file }} on {{ nanosiem_siem_inventory_host }}
+      matches the SIEM's saved credential, or set nano_api_password / nano_api_key
       (an admin API key).
   when: nano_api_key | length == 0 and _nano_api_login.status != 200
 

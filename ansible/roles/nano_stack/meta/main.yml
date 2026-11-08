@@ -1,23 +1,25 @@
 ---
 galaxy_info:
-  role_name: nano_lean
+  role_name: nano_stack
   author: NanoSIEM
-  description: Deploy the open-core nano lean install (install.sh, lean profile) as the range SIEM
+  description: Deploy nano v2 open core with OCSF on ClickHouse
   license: Apache-2.0
-  min_ansible_version: "2.15"
+  min_ansible_version: "2.10"
   platforms:
     - name: Debian
       versions:
+        - bullseye
         - bookworm
     - name: Ubuntu
       versions:
+        - focal
         - jammy
-        - noble
   galaxy_tags:
     - siem
     - security
-    - ocsf
+    - monitoring
     - docker
+    - clickhouse
 
 dependencies:
   - role: geerlingguy.docker

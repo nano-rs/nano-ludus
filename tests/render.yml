@@ -2,7 +2,7 @@
 # Render the Vector configs the roles generate, with the roles' own defaults,
 # templates and validation tasks, for ONE scenario passed as extra vars:
 #   ansible-playbook tests/render.yml -e @tests/scenarios/<name>.yml -e out_dir=<dir>
-# tests/check.sh runs it per scenario, then `vector validate` (0.59) on the output.
+# tests/check.sh runs it per scenario, then validates with v2's Vector image.
 - name: Render the range's Vector configs
   hosts: localhost
   gather_facts: false

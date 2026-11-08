@@ -73,7 +73,7 @@ def nano_ingest_token_plan(wanted, listing, operator_tokens=None, state=None, se
         if source is None:
             entry["error"] = (
                 f"nano has no log source with route key {st!r}, so no token can be bound to it. "
-                f"Deploy its parser (nano_lean_parsers on the SIEM, or Settings > Parser Repository) "
+                f"Deploy its parser (nanosiem_parsers on the SIEM, or Settings > Parser Repository) "
                 f"or drop {st!r} from nano_ingest_sources."
             )
             continue

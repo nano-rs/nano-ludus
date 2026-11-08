@@ -1,5 +1,5 @@
 ---
-# Hosted collector-v2, explicit ACK override for endpoint compatibility.
+# Hosted dedicated ingest, explicit ACK override for endpoint compatibility.
 render_parts: [aggregator]
 nano_ingest_mode: hec
 nano_ingest_url: https://acme.ingest.nano.rs/

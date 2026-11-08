@@ -9,13 +9,14 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 ROOT = Path(__file__).resolve().parents[1]
-IMAGE = os.environ.get("VECTOR_IMAGE", "timberio/vector:0.59.0-alpine@sha256:0e36bc2a290039e9b6a5e92f04bd2f133223506f72d09682c1df16c015172b7a")
+IMAGE = os.environ.get("VECTOR_IMAGE", "timberio/vector:0.61.0-alpine@sha256:3bb7ed5152910ed51729e256937b1d8a4bf67ff624e9d565e8e5877bffd015c7")
 SAMPLES = {
     "windows_event": {"event_id": 4624, "event_data": {"TargetUserName": "lab-user"}},
     "windows_sysmon": {"event_id": 1, "event_data": {"Image": "C:\\Windows\\System32\\cmd.exe"}},
@@ -74,12 +75,12 @@ class HEC(BaseHTTPRequestHandler):
             self.send({"text": "Invalid payload", "code": 6})
 
 
-with ThreadingHTTPServer(("127.0.0.1", 0), HEC) as server, tempfile.TemporaryDirectory(prefix="ludus-wire-") as temp:
+with ThreadingHTTPServer(("0.0.0.0", 0), HEC) as server, tempfile.TemporaryDirectory(prefix="ludus-wire-") as temp:
     threading.Thread(target=server.serve_forever, daemon=True).start()
     out = Path(temp)
     variables = {
         "render_parts": ["aggregator"], "out_dir": temp,
-        "nano_ingest_url": f"http://127.0.0.1:{server.server_port}",
+        "nano_ingest_url": f"http://host.docker.internal:{server.server_port}",
         "nano_ingest_source_tokens": TOKENS,
     }
     vars_file = out / "vars.json"
@@ -101,7 +102,8 @@ with ThreadingHTTPServer(("127.0.0.1", 0), HEC) as server, tempfile.TemporaryDir
     payload = "".join(json.dumps({"source_type": st, "message": json.dumps(sample)}) + "\n" for st, sample in SAMPLES.items())
     name = out.name
     run = subprocess.Popen([
-        "docker", "run", "--rm", "-i", "--name", name, "--network", "host",
+        "docker", "run", "--rm", "-i", "--name", name,
+        "--add-host", "host.docker.internal:host-gateway",
         "-v", f"{temp}:/cfg:ro", "-v", f"{temp}/secrets:/etc/vector/secrets:ro",
         IMAGE, "--config", "/cfg/wire.toml", "--require-healthy", "true",
     ], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -114,7 +116,12 @@ with ThreadingHTTPServer(("127.0.0.1", 0), HEC) as server, tempfile.TemporaryDir
         subprocess.run(["docker", "stop", "--timeout", "2", name], stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL, timeout=10)
         output, _ = run.communicate(timeout=10)
-    assert delivered, "Vector did not deliver all source messages and poll receipts (output withheld)"
+    if not delivered:
+        diagnostic = output.decode(errors="replace")
+        for value in TOKENS.values():
+            diagnostic = diagnostic.replace(value, "<redacted-test-token>")
+        print("\n".join(diagnostic.splitlines()[-80:]), file=sys.stderr)
+        raise AssertionError("Vector did not deliver all source messages and poll receipts")
     assert not ERRORS, "HEC rejected rendered sender payload"
     assert sorted(set(EVENTS)) == sorted(SAMPLES), "not every source reached HEC with its own token"
     assert ACKS, "rendered sender did not poll HEC receipts"

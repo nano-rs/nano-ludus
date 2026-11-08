@@ -1,6 +1,6 @@
 ---
-- name: Recreate nano lean services
+- name: Restart nano v2
   ansible.builtin.command:
     cmd: docker compose -f docker-compose.opensource.yml up -d
-    chdir: "{{ nano_lean_install_dir }}"
+    chdir: "{{ nanosiem_install_dir }}"
   changed_when: true

@@ -1,5 +1,5 @@
 ---
-# Hosted lean tenant: one source credential per source_type, no default token.
+# Hosted dedicated tenant: one source credential per source_type, no default token.
 render_parts: [aggregator]
 nano_ingest_mode: hec
 nano_ingest_url: https://acme.ingest.nano.rs

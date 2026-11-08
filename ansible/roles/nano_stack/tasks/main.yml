@@ -1,0 +1,272 @@
+---
+# ClickHouse 26.6+ has no amd64 compatibility image and requires AVX2. Fail
+# before cloning or pulling so a Proxmox CPU-model mismatch is actionable.
+- name: Check x86-64 CPU support for ClickHouse 26.6+
+  ansible.builtin.command: grep -qw avx2 /proc/cpuinfo
+  register: _nanosiem_avx2
+  changed_when: false
+  failed_when: false
+  when: ansible_facts['architecture'] in ['x86_64', 'amd64']
+
+- name: Require AVX2 for ClickHouse 26.6+
+  ansible.builtin.fail:
+    msg: >-
+      nano v2's ClickHouse 26.6+ image requires AVX2. Expose AVX2 to this VM
+      (Proxmox CPU type 'host' or x86-64-v3) and redeploy the range.
+  when:
+    - ansible_facts['architecture'] in ['x86_64', 'amd64']
+    - _nanosiem_avx2.rc != 0
+
+- name: Require the OCSF profile
+  ansible.builtin.assert:
+    that:
+      - nanosiem_schema_profile == 'ocsf'
+    fail_msg: "The Ludus v2 range requires nanosiem_schema_profile=ocsf"
+    quiet: true
+
+- name: Install installer prerequisites
+  ansible.builtin.apt:
+    name:
+      - git
+      - curl
+      - openssl
+      - ca-certificates
+      - python3
+      - docker-compose-plugin
+    state: present
+    update_cache: true
+
+- name: Check out the v2 open-core source
+  ansible.builtin.git:
+    repo: "{{ nanosiem_repo_url }}"
+    dest: "{{ nanosiem_source_dir }}"
+    version: "{{ nanosiem_ref }}"
+    depth: 1
+    force: true
+  register: nanosiem_source
+  retries: 5
+  delay: 15
+  until: nanosiem_source is succeeded
+
+- name: Read the source installer
+  ansible.builtin.slurp:
+    src: "{{ nanosiem_source_dir }}/install.sh"
+  register: _nanosiem_installer
+
+- name: Read the source compose file
+  ansible.builtin.slurp:
+    src: "{{ nanosiem_source_dir }}/docker-compose.opensource.yml"
+  register: _nanosiem_compose
+
+- name: Require the v2 ClickHouse installer
+  ansible.builtin.assert:
+    that:
+      - "'RELEASE_FLOOR_MAJOR=2' in (_nanosiem_installer.content | b64decode)"
+      - "'NANO_SCHEMA_PROFILE' in (_nanosiem_installer.content | b64decode)"
+      - "'clickhouse/clickhouse-server' in (_nanosiem_compose.content | b64decode)"
+    fail_msg: >-
+      {{ nanosiem_repo_url }}@{{ nanosiem_ref }} is not the v2 ClickHouse
+      open-core source. The public mirror intentionally uses main (not release
+      tags); pin the release with nanosiem_version.
+    quiet: true
+
+# The Ludus control node's home is read-only. Generate and persist the password
+# on the SIEM target, then let the aggregator read it by delegating to this host.
+- name: Persist an operator-supplied admin password
+  ansible.builtin.copy:
+    content: "{{ nanosiem_admin_password }}\n"
+    dest: "{{ nanosiem_admin_password_file }}"
+    mode: "0600"
+  when: nanosiem_admin_password | length > 0
+  no_log: true
+
+- name: Generate the persistent range admin password on the SIEM
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      umask 077
+      password="$(openssl rand -base64 24 | tr -d '\n')"
+      printf '%s-Lab9\n' "$password" > {{ nanosiem_admin_password_file | quote }}
+    executable: /bin/bash
+    creates: "{{ nanosiem_admin_password_file }}"
+  no_log: true
+  when: nanosiem_admin_password | length == 0
+
+- name: Read the persistent range admin password
+  ansible.builtin.slurp:
+    src: "{{ nanosiem_admin_password_file }}"
+  register: _nanosiem_admin_password_raw
+  no_log: true
+
+- name: Adopt the admin password
+  ansible.builtin.set_fact:
+    _nanosiem_admin_password: "{{ _nanosiem_admin_password_raw.content | b64decode | trim }}"
+  no_log: true
+
+- name: Keep the admin password on the SIEM box
+  ansible.builtin.copy:
+    content: |
+      email={{ nanosiem_admin_email }}
+      password={{ _nanosiem_admin_password }}
+      url={{ nanosiem_base_url }}
+    dest: "{{ nanosiem_admin_file }}"
+    mode: "0600"
+  no_log: true
+
+- name: Check for a completed v2 install
+  ansible.builtin.stat:
+    path: "{{ nanosiem_install_marker }}"
+  register: nanosiem_done
+
+- name: Decide whether to run install.sh
+  ansible.builtin.set_fact:
+    _nanosiem_run_install: "{{ not nanosiem_done.stat.exists or nanosiem_rerun_install | bool }}"
+
+# These are the installer's documented non-interactive inputs. There is no
+# private flag or TTY workaround: with every answer set, stdin may be closed.
+- name: Assemble the installer environment
+  ansible.builtin.set_fact:
+    _nanosiem_install_env:
+      NANO_REPO_URL: "{{ nanosiem_repo_url }}"
+      NANO_BRANCH: "{{ nanosiem_ref }}"
+      NANO_INSTALL_DIR: "{{ nanosiem_install_dir }}"
+      NANO_BASE_URL: "{{ nanosiem_base_url }}"
+      NANO_ADMIN_EMAIL: "{{ nanosiem_admin_email }}"
+      NANO_ADMIN_NAME: "{{ nanosiem_admin_name }}"
+      NANO_ADMIN_PASSWORD: "{{ _nanosiem_admin_password }}"
+      NANO_SCHEMA_PROFILE: "{{ nanosiem_schema_profile }}"
+      COMPOSE_PARALLEL_LIMIT: "1"
+  no_log: true
+  when: _nanosiem_run_install | bool
+
+- name: Add an explicit image version when configured
+  ansible.builtin.set_fact:
+    _nanosiem_install_env: "{{ _nanosiem_install_env | combine({'NANO_VERSION': nanosiem_version}) }}"
+  no_log: true
+  when: _nanosiem_run_install | bool and nanosiem_version | length > 0
+
+- name: Create the private installer log
+  ansible.builtin.file:
+    path: "{{ nanosiem_install_log }}"
+    state: touch
+    mode: "0600"
+    modification_time: preserve
+    access_time: preserve
+  when: _nanosiem_run_install | bool
+
+- name: Check for the pre-v2 Ludus compose stack
+  ansible.builtin.stat:
+    path: "{{ nanosiem_legacy_compose_file }}"
+  register: _nanosiem_legacy_compose
+  when: _nanosiem_run_install | bool
+
+- name: Find pre-v2 Ludus stack containers
+  ansible.builtin.command:
+    cmd: >-
+      docker compose -f {{ nanosiem_legacy_compose_file | quote }}
+      ps --all --quiet
+  register: _nanosiem_legacy_containers
+  changed_when: false
+  when:
+    - _nanosiem_run_install | bool
+    - _nanosiem_legacy_compose.stat.exists
+
+- name: Stop the pre-v2 Ludus stack without deleting its data
+  ansible.builtin.command:
+    cmd: >-
+      docker compose -f {{ nanosiem_legacy_compose_file | quote }}
+      down --remove-orphans
+  changed_when: true
+  when:
+    - _nanosiem_run_install | bool
+    - _nanosiem_legacy_compose.stat.exists
+    - _nanosiem_legacy_containers.stdout | trim | length > 0
+
+- name: Run the documented v2 open-core installer
+  ansible.builtin.shell:
+    cmd: >-
+      bash {{ (nanosiem_source_dir ~ "/install.sh") | quote }}
+      < /dev/null >> {{ nanosiem_install_log | quote }} 2>&1
+    chdir: /root
+    executable: /bin/bash
+  environment: "{{ nanosiem_install_env | combine(_nanosiem_install_env) }}"
+  register: nanosiem_install
+  changed_when: true
+  failed_when: false
+  no_log: true
+  when: _nanosiem_run_install | bool
+
+- name: Fail on an installer error
+  ansible.builtin.fail:
+    msg: >-
+      install.sh exited {{ nanosiem_install.rc }}. Inspect the private log
+      {{ nanosiem_install_log }} on the SIEM box; its contents are not copied
+      into Ansible output.
+  when: nanosiem_install.rc is defined and nanosiem_install.rc != 0
+
+- name: Record the completed v2 install
+  ansible.builtin.file:
+    path: "{{ nanosiem_install_marker }}"
+    state: touch
+    mode: "0644"
+    modification_time: preserve
+    access_time: preserve
+  when: _nanosiem_run_install | bool
+
+- name: Open the UI and authenticated ingest ports
+  ansible.builtin.iptables:
+    chain: INPUT
+    protocol: tcp
+    destination_port: "{{ item }}"
+    jump: ACCEPT
+    comment: "nano v2 {{ item }}"
+  loop: "{{ nanosiem_firewall_ports }}"
+
+- name: Ensure the v2 stack is up
+  ansible.builtin.command:
+    cmd: docker compose -f docker-compose.opensource.yml up -d
+    chdir: "{{ nanosiem_install_dir }}"
+  environment:
+    COMPOSE_PARALLEL_LIMIT: "1"
+  register: nanosiem_up
+  changed_when: nanosiem_up.stderr is search('\\b(Created|Recreated)\\b')
+  retries: 10
+  delay: 30
+  until: nanosiem_up.rc == 0
+
+- name: Wait for the API through nginx
+  ansible.builtin.uri:
+    url: "http://localhost/api/health"
+    status_code: 200
+  register: nanosiem_health
+  retries: 60
+  delay: 5
+  until: nanosiem_health.status == 200
+
+- name: Wait for HEC
+  ansible.builtin.uri:
+    url: "http://localhost:8088/services/collector/health"
+    status_code: 200
+  register: nanosiem_hec
+  retries: 30
+  delay: 5
+  until: nanosiem_hec.status == 200
+
+- name: Deploy the range OCSF parsers
+  ansible.builtin.include_tasks: parsers.yml
+  when: nanosiem_parsers | length > 0
+
+- name: Print access info
+  ansible.builtin.debug:
+    msg: |
+      ============================================
+      nano v2 open core is running
+      ============================================
+      UI / API:  {{ nanosiem_base_url }}
+      Admin:     {{ nanosiem_admin_email }} (password in {{ nanosiem_admin_file }})
+      Source:    {{ nanosiem_repo_url }}@{{ nanosiem_ref }}
+      Profile:   OCSF on ClickHouse
+      Ingest:    HEC http://{{ ansible_default_ipv4.address }}:8088/services/collector/event
+      Parsers:   {{ nanosiem_parsers | join(', ') if nanosiem_parsers | length > 0 else 'none' }}
+      The range aggregator issues one source-bound token per parser route.
+      ============================================

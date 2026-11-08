@@ -73,7 +73,7 @@ default_token = "SECRET[nano_ingest.{{ st }}]"
 # The TOKEN decides the source (NAN-3806): nano lands every event sent with
 # it in the log source it is bound to. The sourcetype never routes; nano keeps
 # a differing one as claimed_source_type. It is sent as a literal for that.
-# (Vector 0.59 refuses an unconfined `{{ '{{' }} source_type {{ '}}' }}` template here.)
+# Keep this literal: the token, not an event template, determines the route.
 sourcetype = "{{ st }}"
 host_key = "src_host"
 compression = "{{ nano_ingest_compression }}"

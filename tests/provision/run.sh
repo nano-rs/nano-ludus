@@ -9,14 +9,21 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROLE="$HERE/../../ansible/roles/nano_vector_aggregator"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/nano-ludus-provision.XXXXXX")
 MOCK_PID=""
-cleanup() { [[ -n "$MOCK_PID" ]] && kill "$MOCK_PID" 2>/dev/null || true; rm -rf "$TMP"; }
+cleanup() {
+    [[ -n "$MOCK_PID" ]] && kill "$MOCK_PID" 2>/dev/null || true
+    if [[ -n "${KEEP_PROVISIONED:-}" ]]; then
+        printf 'provision artifacts kept in %s\n' "$TMP"
+    else
+        rm -rf "$TMP"
+    fi
+}
 trap cleanup EXIT
 export ANSIBLE_FILTER_PLUGINS="$ROLE/filter_plugins"
 export ANSIBLE_NOCOLOR=1 ANSIBLE_DEPRECATION_WARNINGS=0 ANSIBLE_LOCALHOST_WARNING=0 ANSIBLE_INVENTORY_UNPARSED_WARNING=0
 
 fails=0
 PORT=""
-# Obviously fake, test-only: what nano_lean would have generated for the range.
+# Obviously fake, test-only: what nano_stack would have generated on the SIEM.
 ( umask 077; printf 'test-password\n' > "$TMP/lab-admin-password" )
 SOURCES='[{"source_id":"11111111-1111-4111-8111-111111111111","name":"Windows Event","source_type":"routed","route_key":"windows_event","enabled":true},
           {"source_id":"22222222-2222-4222-8222-222222222222","name":"Windows Sysmon","source_type":"routed","route_key":"windows_sysmon","enabled":true},
@@ -39,7 +46,8 @@ import json, sys
 port = sys.argv[2]
 v = {"nano_ingest_mode": "hec", "nano_api_url": f"http://127.0.0.1:{port}",
      "nano_ingest_url": f"http://127.0.0.1:{port}", "nano_api_password": "",
-     # The range's generated lab admin password, as nano_lean leaves it on the controller.
+     # The range's generated lab admin password, as nano_stack leaves it on the SIEM.
+     "nanosiem_siem_inventory_host": "localhost",
      "nano_lab_admin_password_file": sys.argv[4],
      "nano_api_wait_retries": 1, "nano_api_wait_delay": 0, "inventory_hostname": "range-proxy"}
 v.update(json.loads(sys.argv[3]))
@@ -155,7 +163,7 @@ play shared-token "$TMP/shared" fail "Every source requires its own bound token"
 # 10. A wrong admin password fails with what to set.
 start_mock "{\"model\":\"bound\",\"sources\":$SOURCES,\"tokens\":[]}"
 play bad-login "$TMP/badlogin" fail "rejected the login" '{"nano_api_password":"nope"}' && echo "ok   bad-login"
-# 11. No generated password on the controller (the SIEM role never ran) and no override: fail
+# 11. No generated password on the SIEM (the SIEM role never ran) and no override: fail
 #     and say where the password should be.
 play no-lab-password "$TMP/nolabpw" fail "generated lab admin password is not at" "{\"nano_lab_admin_password_file\":\"$TMP/does-not-exist\"}" && echo "ok   no-lab-password"
 
