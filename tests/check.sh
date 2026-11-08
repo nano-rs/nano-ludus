@@ -144,6 +144,13 @@ if '[secret.nano_ingest]' not in aggregator_template or 'SECRET[nano_ingest.' no
 if './secrets:/etc/vector/secrets:ro' not in aggregator_compose:
     errs.append("aggregator secret directory is not mounted read-only")
 
+conduit_compose = (roles_dir / "nano_conduit_proxy/templates/docker-compose.yml.j2").read_text()
+if '"wget"' in conduit_compose or "/proc/net/tcp" not in conduit_compose:
+    errs.append("Conduit healthchecks require a tool absent from the minimal images")
+for listener_hex in ("2383", "20FB"):
+    if f"*:{listener_hex})" not in conduit_compose:
+        errs.append(f"Conduit healthcheck is missing listener 0x{listener_hex}")
+
 for e in errs:
     print("FAIL:", e)
 print("policy:", "ok" if not errs else f"{len(errs)} problem(s)")

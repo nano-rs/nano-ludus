@@ -39,7 +39,10 @@ services:
       conduit-dragonfly:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9091/metrics"]
+      # The published image is intentionally minimal: it has sh but no wget,
+      # curl, busybox or nc. Check that the metrics listener is present using
+      # only POSIX shell builtins and procfs (9091 = 0x2383).
+      test: ["CMD-SHELL", "while read -r _ local _; do case \"$$local\" in *:2383) exit 0;; esac; done < /proc/net/tcp; exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -61,7 +64,8 @@ services:
       conduit-dragonfly:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8443/api/v1/ca/cert"]
+      # The API image has the same minimal runtime (8443 = 0x20FB).
+      test: ["CMD-SHELL", "while read -r _ local _; do case \"$$local\" in *:20FB) exit 0;; esac; done < /proc/net/tcp; exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
