@@ -6,12 +6,10 @@
 
 # ---- Source ----
 nanosiem_repo_url: "https://github.com/nano-rs/nano.git"
-# v2.0.0 is the intended release ref. Until that public tag exists, the public
-# mirror's main branch is the release-candidate fallback.
+# The public mirror intentionally publishes no git tags. main carries the v2
+# source, while NANO_VERSION pins the release recorded in images.lock.
 nanosiem_ref: "main"
-# Empty means install.sh reads the release from the checked-out images.lock.
-# Set "2.0.0" together with nanosiem_ref: "v2.0.0" after that tag is public.
-nanosiem_version: ""
+nanosiem_version: "2.0.0"
 
 nanosiem_source_dir: /opt/nano-v2-source
 nanosiem_install_dir: /opt/nano

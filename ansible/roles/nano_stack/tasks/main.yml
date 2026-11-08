@@ -66,8 +66,8 @@
       - "'clickhouse/clickhouse-server' in (_nanosiem_compose.content | b64decode)"
     fail_msg: >-
       {{ nanosiem_repo_url }}@{{ nanosiem_ref }} is not the v2 ClickHouse
-      open-core source. Use v2.0.0 after it is public, or the public mirror's
-      v2 main fallback.
+      open-core source. The public mirror intentionally uses main (not release
+      tags); pin the release with nanosiem_version.
     quiet: true
 
 # The Ludus control node's home is read-only. Generate and persist the password

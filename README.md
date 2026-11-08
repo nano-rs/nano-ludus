@@ -63,13 +63,12 @@ There is no private installer flag, pseudo-TTY, or role-side stack patch. The
 installer owns `.env`, image digest verification, resource sizing, database
 migration, first-admin creation, and stack startup.
 
-The intended release ref is `v2.0.0`. That tag was not public when this change
-was prepared, so the role defaults to the public mirror's `main` fallback and
-lets `install.sh` read the release from `images.lock`. After the tag is public,
-pin both values in `blueprints/nanosiem/range-config.yml`:
+The public mirror intentionally publishes no git tags. The role checks out
+`main`, whose `images.lock` records the released product, and pins the image
+release separately:
 
 ```yaml
-nanosiem_ref: "v2.0.0"
+nanosiem_ref: "main"
 nanosiem_version: "2.0.0"
 ```
 

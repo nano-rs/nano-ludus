@@ -51,10 +51,11 @@ ludus:
     role_vars:
       docker_users:
         - localuser
-      # The public v2.0.0 tag is the intended pin. Until it exists, main is the
-      # documented public-mirror fallback and install.sh reads its images.lock.
+      # The public mirror intentionally has no git tags. main supplies the v2
+      # source; NANO_VERSION pins the matching release from images.lock.
       nanosiem_repo_url: "https://github.com/nano-rs/nano.git"
       nanosiem_ref: "main"
+      nanosiem_version: "2.0.0"
       nanosiem_schema_profile: ocsf
       nanosiem_parsers:
         - windows_event
