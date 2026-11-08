@@ -22,7 +22,7 @@ You need a running Ludus server with the CLI connected
 
 ```bash
 # Build the templates if the server does not already have them.
-ludus templates build -n debian-11-x64-server-template
+ludus templates build -n debian-13-x64-server-template
 ludus templates build -n debian-12-x64-server-template
 ludus templates build -n win2022-server-x64-template
 ludus templates build -n win11-22h2-x64-enterprise-template
@@ -33,8 +33,8 @@ ludus blueprint apply nano-rs-nano-ludus/nanosiem
 ludus range deploy
 ```
 
-The Debian 11 template is required by the Ludus router even though the blueprint
-does not name it.
+The Debian 13 template is required by the Ludus 2.3.10 router even though the
+blueprint does not name it.
 
 The SIEM VM must expose AVX2 for ClickHouse 26.6+. The role checks this before
 installing anything and reports the Proxmox CPU-model remediation (`host` or
@@ -62,6 +62,10 @@ read-only home.
 There is no private installer flag, pseudo-TTY, or role-side stack patch. The
 installer owns `.env`, image digest verification, resource sizing, database
 migration, first-admin creation, and stack startup.
+
+When upgrading an existing range, the role stops the exact pre-v2 compose stack
+at `/opt/nanosiem/docker-compose.yml` before running the installer. It does not
+delete that stack's volumes, so its previous lab data remains recoverable.
 
 The public mirror intentionally publishes no git tags. The role checks out
 `main`, whose `images.lock` records the released product, and pins the image

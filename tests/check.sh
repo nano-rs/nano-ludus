@@ -90,6 +90,10 @@ if "lookup('ansible.builtin.env', 'HOME')" in stack_text or "delegate_to: localh
     errs.append("nano_stack writes secrets on the Ludus controller instead of the SIEM")
 if "--non-interactive" in stack_text or "NANO_NONINTERACTIVE" in stack_text:
     errs.append("nano_stack uses an installer flag/env not present in the v2 contract")
+if "/opt/nanosiem/docker-compose.yml" not in stack_text or "down --remove-orphans" not in stack_text:
+    errs.append("nano_stack does not retire the exact pre-v2 Ludus compose stack")
+if re.search(r"docker compose[^\n]*down[^\n]*(?:--volumes|(?:^|\s)-v(?:\s|$))", stack_text):
+    errs.append("nano_stack deletes pre-v2 data volumes during migration")
 for parser in ("windows_event", "windows_sysmon", "conduit_proxy"):
     if not re.search(rf"^\s*-\s+{parser}\s*$", (roles_dir / "nano_stack/defaults/main.yml").read_text(), re.M):
         errs.append(f"nano_stack does not deploy parser {parser}")

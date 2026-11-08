@@ -154,6 +154,34 @@
     access_time: preserve
   when: _nanosiem_run_install | bool
 
+- name: Check for the pre-v2 Ludus compose stack
+  ansible.builtin.stat:
+    path: "{{ nanosiem_legacy_compose_file }}"
+  register: _nanosiem_legacy_compose
+  when: _nanosiem_run_install | bool
+
+- name: Find pre-v2 Ludus stack containers
+  ansible.builtin.command:
+    cmd: >-
+      docker compose -f {{ nanosiem_legacy_compose_file | quote }}
+      ps --all --quiet
+  register: _nanosiem_legacy_containers
+  changed_when: false
+  when:
+    - _nanosiem_run_install | bool
+    - _nanosiem_legacy_compose.stat.exists
+
+- name: Stop the pre-v2 Ludus stack without deleting its data
+  ansible.builtin.command:
+    cmd: >-
+      docker compose -f {{ nanosiem_legacy_compose_file | quote }}
+      down --remove-orphans
+  changed_when: true
+  when:
+    - _nanosiem_run_install | bool
+    - _nanosiem_legacy_compose.stat.exists
+    - _nanosiem_legacy_containers.stdout | trim | length > 0
+
 - name: Run the documented v2 open-core installer
   ansible.builtin.shell:
     cmd: >-

@@ -13,6 +13,10 @@ nanosiem_version: "2.0.0"
 
 nanosiem_source_dir: /opt/nano-v2-source
 nanosiem_install_dir: /opt/nano
+# The pre-v2 Ludus role used this compose file and fixed nano-* container
+# names. Stop that exact stack before install.sh starts v2; do not remove its
+# volumes, so an operator can recover the old lab data if needed.
+nanosiem_legacy_compose_file: /opt/nanosiem/docker-compose.yml
 nanosiem_install_log: /root/nano-v2-install.log
 nanosiem_install_marker: /root/.nano-lab-v2-installed
 nanosiem_install_env: {}
