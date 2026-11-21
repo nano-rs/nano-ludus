@@ -32,12 +32,12 @@ q "SELECT source_type, class_name, count() AS events, max(timestamp) AS latest
 
 col=$(clickhouse-client -q "SELECT name FROM system.columns
    WHERE database = 'nanosiem' AND table = 'ocsf_logs'
-     AND name IN ('device_hostname', 'src_endpoint_hostname', 'hostname', 'device_name')
-   ORDER BY indexOf(['device_hostname', 'src_endpoint_hostname', 'hostname', 'device_name'], name)
+     AND name IN ('device.hostname', 'src_host_unified', 'src_endpoint.hostname')
+   ORDER BY indexOf(['device.hostname', 'src_host_unified', 'src_endpoint.hostname'], name)
    LIMIT 1")
 if [ -n "$col" ]; then
     echo "== by host ($col)"
-    q "SELECT $col AS host, source_type, count() AS events, max(timestamp) AS latest
+    q "SELECT \`$col\` AS host, source_type, count() AS events, max(timestamp) AS latest
        FROM nanosiem.ocsf_logs
        WHERE timestamp > now() - INTERVAL $HOURS HOUR
        GROUP BY host, source_type
