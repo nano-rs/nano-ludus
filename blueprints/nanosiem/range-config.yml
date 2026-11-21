@@ -14,8 +14,8 @@
 #   3. ludus range deploy
 #
 # Before deploying:
-#   - Build required templates: debian-13, win2025-server-tpm, win11-25h2-enterprise
-#     (the two Windows templates come from ludus-source-bsl)
+#   - Build required templates: debian-13, win2022-server, win11-25h2-enterprise
+#     (win11-25h2 comes from ludus-source-bsl)
 #
 # Role names below carry the `NanoSIEM.` prefix (NAN-2358). The five nano_*
 # roles are vendored under `ansible/roles/`, and every one of them declares
@@ -95,7 +95,7 @@ ludus:
   # =========================================================================
   - vm_name: "{{ range_id }}-dc01"
     hostname: "{{ range_id }}-DC01"
-    template: win2025-server-x64-tpm-template
+    template: win2022-server-x64-template
     vlan: 10
     ip_last_octet: 20
     ram_gb: 8
@@ -130,7 +130,7 @@ ludus:
   # =========================================================================
   - vm_name: "{{ range_id }}-srv01"
     hostname: "{{ range_id }}-SRV01"
-    template: win2025-server-x64-tpm-template
+    template: win2022-server-x64-template
     vlan: 10
     ip_last_octet: 21
     ram_gb: 4
