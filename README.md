@@ -52,6 +52,12 @@ and email for operator recovery. The aggregator reads the password through an
 Ansible delegated task. Nothing writes beneath the Ludus controller's
 read-only home.
 
+To confirm events are arriving, run `scripts/range-events.sh [siem-ip] [hours]`
+(defaults `10.1.10.10` and 6). It connects over SSH as `debian`, so it asks for
+that user's SSH and sudo passwords, and prints `nanosiem.ocsf_logs` counts by
+source, OCSF class and host. The query runs inside the `nano-clickhouse`
+container with the credentials it already holds.
+
 ## v2 installer contract
 
 `NanoSIEM.nano_stack` checks out the public
