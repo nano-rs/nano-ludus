@@ -51,11 +51,10 @@ ludus:
     role_vars:
       docker_users:
         - localuser
-      # The public mirror intentionally has no git tags. main supplies the v2
-      # source; NANO_VERSION pins the matching release from images.lock.
+      # The open-core release the range installs. The role checks out the
+      # matching v<version> tag of nano-rs/nano and runs its install.sh.
       nanosiem_repo_url: "https://github.com/nano-rs/nano.git"
-      nanosiem_ref: "main"
-      nanosiem_version: "2.0.0"
+      nanosiem_version: "2.0.34"
       nanosiem_schema_profile: ocsf
       nanosiem_parsers:
         - windows_event

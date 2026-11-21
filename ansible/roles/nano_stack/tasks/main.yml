@@ -41,7 +41,8 @@
     repo: "{{ nanosiem_repo_url }}"
     dest: "{{ nanosiem_source_dir }}"
     version: "{{ nanosiem_ref }}"
-    depth: 1
+    # No depth: ansible.builtin.git fails to re-fetch a shallow tag checkout,
+    # which breaks every redeploy. The full repository is small.
     force: true
   register: nanosiem_source
   retries: 5
@@ -66,9 +67,53 @@
       - "'clickhouse/clickhouse-server' in (_nanosiem_compose.content | b64decode)"
     fail_msg: >-
       {{ nanosiem_repo_url }}@{{ nanosiem_ref }} is not the v2 ClickHouse
-      open-core source. The public mirror intentionally uses main (not release
-      tags); pin the release with nanosiem_version.
+      open-core source. Pin a v2 open-core release with nanosiem_version.
     quiet: true
+
+# A tag whose images.lock records another release would mix one release's
+# installer and compose files with another's images.
+- name: Read the source images.lock
+  ansible.builtin.slurp:
+    src: "{{ nanosiem_source_dir }}/images.lock"
+  register: _nanosiem_lock
+
+- name: Read the release recorded in images.lock
+  ansible.builtin.set_fact:
+    _nanosiem_lock_release: >-
+      {{ _nanosiem_lock.content | b64decode
+         | regex_findall('(?m)^# Release: v?(\S+)') | first | default('') }}
+
+- name: Require images.lock to record the pinned release
+  ansible.builtin.assert:
+    that:
+      - _nanosiem_lock_release == nanosiem_version
+    fail_msg: >-
+      {{ nanosiem_repo_url }}@{{ nanosiem_ref }} images.lock records release
+      {{ _nanosiem_lock_release or 'none' }}, not {{ nanosiem_version }}.
+    quiet: true
+
+- name: Fetch the one-line installer
+  ansible.builtin.uri:
+    url: "{{ nanosiem_get_url }}"
+    return_content: true
+  register: _nanosiem_get
+  failed_when: false
+  when: nanosiem_get_url | length > 0
+
+- name: Compare the one-line installer with the pinned release
+  ansible.builtin.debug:
+    msg: "{{ _nanosiem_get_msg | trim }}"
+  vars:
+    _nanosiem_get_msg: >-
+      {% if _nanosiem_get.status | default(0) != 200 %}
+      Could not fetch {{ nanosiem_get_url }} (status {{ _nanosiem_get.status | default('none') }}); not compared.
+      {% elif (_nanosiem_get.content | hash('sha256')) == (_nanosiem_installer.content | b64decode | hash('sha256')) %}
+      {{ nanosiem_get_url }} serves the v{{ nanosiem_version }} install.sh.
+      {% else %}
+      {{ nanosiem_get_url }} serves a different install.sh than v{{ nanosiem_version }};
+      a newer release is probably out. Bump nanosiem_version to test it.
+      {% endif %}
+  when: nanosiem_get_url | length > 0
 
 # The Ludus control node's home is read-only. Generate and persist the password
 # on the SIEM target, then let the aggregator read it by delegating to this host.
@@ -118,9 +163,20 @@
     path: "{{ nanosiem_install_marker }}"
   register: nanosiem_done
 
+# The marker records the installed release. Markers written before it did are
+# empty, so those ranges reinstall once.
+- name: Read the installed release
+  ansible.builtin.slurp:
+    src: "{{ nanosiem_install_marker }}"
+  register: _nanosiem_marker
+  when: nanosiem_done.stat.exists
+
 - name: Decide whether to run install.sh
   ansible.builtin.set_fact:
-    _nanosiem_run_install: "{{ not nanosiem_done.stat.exists or nanosiem_rerun_install | bool }}"
+    _nanosiem_run_install: >-
+      {{ not nanosiem_done.stat.exists
+         or (_nanosiem_marker.content | b64decode | trim) != nanosiem_version
+         or nanosiem_rerun_install | bool }}
 
 # These are the installer's documented non-interactive inputs. There is no
 # private flag or TTY workaround: with every answer set, stdin may be closed.
@@ -138,6 +194,16 @@
       COMPOSE_PARALLEL_LIMIT: "1"
   no_log: true
   when: _nanosiem_run_install | bool
+
+# Re-running install.sh over an existing install is an upgrade or restart.
+# Unattended, install.sh stops at the sender-pause check when the running Vector
+# predates v2.0.32 unless this is set. It also answers "Upgrade to X now?" if a
+# TTY is ever attached. It bypasses no digest, sizing or legacy-upgrade guard.
+- name: Confirm the upgrade for an existing install
+  ansible.builtin.set_fact:
+    _nanosiem_install_env: "{{ _nanosiem_install_env | combine({'NANO_CONFIRM_UPGRADE': '1'}) }}"
+  no_log: true
+  when: _nanosiem_run_install | bool and nanosiem_done.stat.exists
 
 - name: Add an explicit image version when configured
   ansible.builtin.set_fact:
@@ -204,13 +270,11 @@
       into Ansible output.
   when: nanosiem_install.rc is defined and nanosiem_install.rc != 0
 
-- name: Record the completed v2 install
-  ansible.builtin.file:
-    path: "{{ nanosiem_install_marker }}"
-    state: touch
+- name: Record the installed release
+  ansible.builtin.copy:
+    content: "{{ nanosiem_version }}\n"
+    dest: "{{ nanosiem_install_marker }}"
     mode: "0644"
-    modification_time: preserve
-    access_time: preserve
   when: _nanosiem_run_install | bool
 
 - name: Open the UI and authenticated ingest ports
@@ -264,7 +328,7 @@
       ============================================
       UI / API:  {{ nanosiem_base_url }}
       Admin:     {{ nanosiem_admin_email }} (password in {{ nanosiem_admin_file }})
-      Source:    {{ nanosiem_repo_url }}@{{ nanosiem_ref }}
+      Release:   v{{ nanosiem_version }} ({{ nanosiem_repo_url }}@{{ nanosiem_ref }})
       Profile:   OCSF on ClickHouse
       Ingest:    HEC http://{{ ansible_default_ipv4.address }}:8088/services/collector/event
       Parsers:   {{ nanosiem_parsers | join(', ') if nanosiem_parsers | length > 0 else 'none' }}

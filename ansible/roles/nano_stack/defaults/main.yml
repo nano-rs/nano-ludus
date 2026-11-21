@@ -6,10 +6,16 @@
 
 # ---- Source ----
 nanosiem_repo_url: "https://github.com/nano-rs/nano.git"
-# The public mirror intentionally publishes no git tags. main carries the v2
-# source, while NANO_VERSION pins the release recorded in images.lock.
-nanosiem_ref: "main"
-nanosiem_version: "2.0.0"
+# The release a customer gets from `curl -fsSL https://get.nano.rs | bash`.
+# The public mirror tags every open-core release. The role checks out that tag,
+# and install.sh clones the same tag into nanosiem_install_dir, so the
+# installer, compose files and images.lock all describe one release.
+nanosiem_version: "2.0.34"
+nanosiem_ref: "v{{ nanosiem_version }}"
+# The one-line installer endpoint. The role compares it with the tagged
+# install.sh and reports drift without failing, because get.nano.rs moves to
+# each new release. Empty skips the comparison.
+nanosiem_get_url: "https://get.nano.rs"
 
 nanosiem_source_dir: /opt/nano-v2-source
 nanosiem_install_dir: /opt/nano

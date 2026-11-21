@@ -80,8 +80,14 @@ stack_text = "\n".join(
 if "NANO_SCHEMA_PROFILE" not in stack_text or "ocsf" not in stack_text.lower():
     errs.append("nano_stack does not select the OCSF installer profile")
 stack_defaults = (roles_dir / "nano_stack/defaults/main.yml").read_text()
-if 'nanosiem_ref: "main"' not in stack_defaults or 'nanosiem_version: "2.0.0"' not in stack_defaults:
-    errs.append("nano_stack does not use public main with the v2.0.0 release pin")
+pinned = re.search(r'^nanosiem_version: "(2\.\d+\.\d+)"$', stack_defaults, re.M)
+if not pinned or 'nanosiem_ref: "v{{ nanosiem_version }}"' not in stack_defaults:
+    errs.append("nano_stack does not pin a v2 open-core release tag")
+range_pin = re.search(r'^\s*nanosiem_version:\s*"?([^"\s#]+)"?', range_config, re.M)
+if pinned and range_pin and range_pin.group(1) != pinned.group(1):
+    errs.append(f"range-config nanosiem_version {range_pin.group(1)} differs from the nano_stack default {pinned.group(1)}")
+if re.search(r"^\s*nanosiem_ref:", range_config, re.M):
+    errs.append("range-config overrides nanosiem_ref; pin nanosiem_version instead")
 if "ClickHouse" not in stack_text:
     errs.append("nano_stack does not identify the v2 ClickHouse contract")
 if "grep -qw avx2 /proc/cpuinfo" not in stack_text or "x86-64-v3" not in stack_text:

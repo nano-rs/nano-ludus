@@ -67,14 +67,19 @@ When upgrading an existing range, the role stops the exact pre-v2 compose stack
 at `/opt/nanosiem/docker-compose.yml` before running the installer. It does not
 delete that stack's volumes, so its previous lab data remains recoverable.
 
-The public mirror intentionally publishes no git tags. The role checks out
-`main`, whose `images.lock` records the released product, and pins the image
-release separately:
+The range installs the open-core edition only. A customer runs
+`curl -fsSL https://get.nano.rs | bash`, which clones `nano-rs/nano`. The role
+pins one release and checks out its tag, so `install.sh`, the compose files and
+`images.lock` all describe that release:
 
 ```yaml
-nanosiem_ref: "main"
-nanosiem_version: "2.0.0"
+nanosiem_version: "2.0.34"
+nanosiem_ref: "v{{ nanosiem_version }}"
 ```
+
+It fails if the tag's `images.lock` records a different release. It also
+compares `https://get.nano.rs` with the tagged `install.sh` and reports a
+mismatch without failing; a mismatch usually means a newer release is out.
 
 The role refuses a source whose installer does not identify the v2 product line
 and OCSF/ClickHouse profile contract. It imports and deploys these OCSF parsers
