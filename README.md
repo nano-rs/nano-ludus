@@ -7,7 +7,7 @@ ClickHouse. An optional Conduit proxy adds HTTP activity telemetry.
 
 ```text
 DC01 ─┐
-SRV01 ├─ Vector 0.61 :9000 ─► proxy / aggregator ─ HEC :8088 ─► nano v2
+SRV01 ├─ Vector 0.62 :9000 ─► proxy / aggregator ─ HEC :8088 ─► nano v2
 WS01 ─┘                         + Conduit                         OCSF / ClickHouse
 ```
 
@@ -136,20 +136,22 @@ A single shared token is intentionally unsupported.
 
 ## Vector versions
 
-The v2 server compose uses nano's feature-minimized Vector fork. That server
-image omits the Vector and HEC sinks required by the Ludus edge hops, so the
-aggregator and Conduit sidecar use the full upstream Alpine build at the same
-0.61 base version, pinned to its multi-architecture digest. Alpine also
-provides the small wget/awk tools used by the aggregator healthcheck:
+The v2 server compose uses nano's feature-minimized Vector fork, which
+`install.sh` deploys and this range does not change. That server image omits
+the Vector and HEC sinks the Ludus edge hops need, so the collectors run the
+latest upstream Vector. The aggregator and Conduit sidecar use the full Alpine
+build, pinned to its multi-architecture digest. Alpine also provides the small
+wget/awk tools used by the aggregator healthcheck:
 
 ```text
-timberio/vector:0.61.0-alpine
-sha256:3bb7ed5152910ed51729e256937b1d8a4bf67ff624e9d565e8e5877bffd015c7
+timberio/vector:0.62.0-alpine
+sha256:149c77c09aabf16a3aa543abf9cea2e2152c1d9a7d4a45669fe7ad05f4ed8b27
 ```
 
-The Windows collector uses the checksum-pinned official Vector 0.61.0 archive.
-It needs only the stable `windows_event_log` source and Vector sink; nano's
-server-specific changes remain in the Linux image.
+The Windows collector uses the checksum-pinned official Vector 0.62.0 archive.
+It needs only the stable `windows_event_log` source and Vector sink. The
+collectors talk the Vector protocol only to each other and reach nano over HEC,
+so they do not need to match the server's Vector version.
 
 ## Topology and roles
 
@@ -169,7 +171,7 @@ The vendored roles are:
 | --- | --- |
 | `NanoSIEM.nano_stack` | Run the v2 open-core installer and deploy the OCSF parsers |
 | `NanoSIEM.nano_sysmon` | Install the observation-only Sysmon configuration |
-| `NanoSIEM.nano_vector_agent` | Collect Windows Event Logs and Sysmon with Vector 0.61 |
+| `NanoSIEM.nano_vector_agent` | Collect Windows Event Logs and Sysmon with Vector 0.62 |
 | `NanoSIEM.nano_vector_aggregator` | Receive Vector events and forward source-bound HEC |
 | `NanoSIEM.nano_conduit_proxy` | Capture proxy activity and send it to the aggregator |
 

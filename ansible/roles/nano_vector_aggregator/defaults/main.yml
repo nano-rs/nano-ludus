@@ -101,11 +101,12 @@ nano_ingest_compression: gzip
 nanosiem_siem_ip: ""
 
 # ---- Aggregator image ----
-# v2 is based on Vector 0.61. The nano server image is feature-minimized and
-# omits the Vector and HEC sinks this edge aggregator needs, so use the full
-# upstream 0.61.0 Alpine image, pinned to its multi-architecture index digest.
+# The nano server image is nano's feature-minimized Vector fork and omits the
+# Vector and HEC sinks this edge aggregator needs. The range collectors run the
+# latest upstream Vector instead: the full 0.62.0 Alpine image, pinned to its
+# multi-architecture index digest. They reach nano only over HEC.
 # Alpine supplies the wget/awk applets used by the container healthcheck.
-aggregator_vector_image: "timberio/vector:0.61.0-alpine@sha256:3bb7ed5152910ed51729e256937b1d8a4bf67ff624e9d565e8e5877bffd015c7"
+aggregator_vector_image: "timberio/vector:0.62.0-alpine@sha256:149c77c09aabf16a3aa543abf9cea2e2152c1d9a7d4a45669fe7ad05f4ed8b27"
 
 # ---- Aggregator listen ports ----
 # Port for Vector-to-Vector protocol (agents connect here)

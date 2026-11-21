@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-VECTOR_IMAGE=${VECTOR_IMAGE:-timberio/vector:0.61.0-alpine@sha256:3bb7ed5152910ed51729e256937b1d8a4bf67ff624e9d565e8e5877bffd015c7}
+VECTOR_IMAGE=${VECTOR_IMAGE:-timberio/vector:0.62.0-alpine@sha256:149c77c09aabf16a3aa543abf9cea2e2152c1d9a7d4a45669fe7ad05f4ed8b27}
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/nano-ludus-check.XXXXXX")
 trap 'rm -rf "$OUT"' EXIT
 export ANSIBLE_ROLES_PATH="$ROOT/ansible/roles${ANSIBLE_ROLES_PATH:+:$ANSIBLE_ROLES_PATH}"
@@ -115,8 +115,8 @@ if "delegate_to: \"{{ nanosiem_siem_inventory_host }}\"" not in aggregator_text:
     errs.append("nano_vector_aggregator does not read the generated admin password from the SIEM host")
 
 expected_image = (
-    "timberio/vector:0.61.0-alpine@sha256:"
-    "3bb7ed5152910ed51729e256937b1d8a4bf67ff624e9d565e8e5877bffd015c7"
+    "timberio/vector:0.62.0-alpine@sha256:"
+    "149c77c09aabf16a3aa543abf9cea2e2152c1d9a7d4a45669fe7ad05f4ed8b27"
 )
 for p in roles_dir.rglob("*"):
     if not p.is_file():
@@ -125,13 +125,13 @@ for p in roles_dir.rglob("*"):
     rel = p.relative_to(root)
     for match in re.finditer(r"(?:ghcr\.io/nano-rs/vector|timberio/vector):[^\s\"']+", text):
         if match.group(0) != expected_image:
-            errs.append(f"{rel}: Vector edge image is not the pinned full 0.61.0 build: {match.group(0)}")
+            errs.append(f"{rel}: Vector edge image is not the pinned full 0.62.0 build: {match.group(0)}")
     if re.search(r"vector/nightly|vector-nightly|0\.59\.0", text):
         errs.append(f"{rel}: uses a pre-v2 Vector release")
 
 agent_defaults = (roles_dir / "nano_vector_agent/defaults/main.yml").read_text()
-if 'vector_version: "0.61.0"' not in agent_defaults:
-    errs.append("Windows agent is not pinned to Vector 0.61.0")
+if 'vector_version: "0.62.0"' not in agent_defaults:
+    errs.append("Windows agent is not pinned to Vector 0.62.0")
 if not re.search(r'vector_archive_sha256:\s*"[0-9a-f]{64}"', agent_defaults):
     errs.append("Windows agent archive has no sha256 pin")
 
