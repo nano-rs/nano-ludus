@@ -53,9 +53,10 @@ printf '%s\n' "$metrics" | awk -v pct="$BUFFER_PCT" '
         return c s
     }
     # Keep the largest reading per buffer rather than summing. Vector emits
-    # buffer_byte_size and buffer_size_bytes as aliases of each other (verified
-    # on 0.5x - same component, same value, both present), so adding them would
-    # double-count and report a half-full buffer as full.
+    # buffer_byte_size and buffer_size_bytes as aliases of each other (same
+    # component, same value, both present), so adding them would double-count
+    # and report a half-full buffer as full. Vector 0.62 removed the legacy
+    # buffer_max_byte_size gauge; buffer_max_size_bytes is the capacity.
     function keep_max(arr, key, v) { if (v > arr[key]) arr[key] = v }
 
     # Match on the metric SUFFIX, not a vector_ prefix: this role sets
@@ -65,7 +66,6 @@ printf '%s\n' "$metrics" | awk -v pct="$BUFFER_PCT" '
     # at any utilization. Suffix matching survives a namespace change too.
     /^[A-Za-z0-9_]*buffer_byte_size\{/              { keep_max(size, bufkey($0), $2) }
     /^[A-Za-z0-9_]*buffer_size_bytes\{/             { keep_max(size, bufkey($0), $2) }
-    /^[A-Za-z0-9_]*buffer_max_byte_size\{/          { keep_max(cap,  bufkey($0), $2) }
     /^[A-Za-z0-9_]*buffer_max_size_bytes\{/         { keep_max(cap,  bufkey($0), $2) }
     /^[A-Za-z0-9_]*buffer_discarded_events_total\{/ { keep_max(disc, bufkey($0), $2) }
     END {
@@ -83,8 +83,8 @@ printf '%s\n' "$metrics" | awk -v pct="$BUFFER_PCT" '
             }
         }
 
-        # Vector renames metrics between releases and this role tracks a
-        # floating image tag. Do not invent a failure - the API check already
+        # Vector renames metrics between releases (0.62 removed legacy buffer
+        # gauges). Do not invent a failure - the API check already
         # passed - but say plainly that utilization went unchecked, so this
         # shows up in `docker inspect ... .State.Health` as a gap rather than
         # as a clean bill of health.

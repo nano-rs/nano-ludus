@@ -21,11 +21,12 @@ You need a running Ludus server with the CLI connected
 (`ludus range list` works).
 
 ```bash
-# Build the templates if the server does not already have them.
+# Add the two Windows templates stock Ludus does not ship, then build the
+# templates if the server does not already have them.
+ludus source add ludus-source-bsl --templates win2025-server-x64-tpm-template,win11-25h2-x64-enterprise-template
 ludus templates build -n debian-13-x64-server-template
-ludus templates build -n debian-12-x64-server-template
-ludus templates build -n win2022-server-x64-template
-ludus templates build -n win11-22h2-x64-enterprise-template
+ludus templates build -n win2025-server-x64-tpm-template
+ludus templates build -n win11-25h2-x64-enterprise-template
 
 # Add every source artifact, apply the blueprint, and deploy.
 ludus source add https://github.com/nano-rs/nano-ludus --all
@@ -33,8 +34,11 @@ ludus blueprint apply nano-rs-nano-ludus/nanosiem
 ludus range deploy
 ```
 
-The Debian 13 template is required by the Ludus 2.3.10 router even though the
-blueprint does not name it.
+The range runs current releases: Debian 13 for the SIEM and proxy, Windows
+Server 2025 for DC01 and SRV01, and Windows 11 25H2 for WS01. The Ludus 2.3.10
+router also uses the Debian 13 template. Both Windows templates come from the
+Bad Sector Labs source (`ludus-source-bsl`), which is why the quick start adds
+them first.
 
 The SIEM VM must expose AVX2 for ClickHouse 26.6+. The role checks this before
 installing anything and reports the Proxmox CPU-model remediation (`host` or
@@ -161,9 +165,9 @@ The range is five VMs on VLAN 10:
 | --- | --- | --- |
 | `.10` | SIEM | nano v2 open core, OCSF, ClickHouse, Postgres, Vector, nginx |
 | `.11` | proxy | Vector aggregator plus Conduit |
-| `.20` | DC01 | Windows Server domain controller, Sysmon and Event Logs |
-| `.21` | SRV01 | Windows member server, Sysmon and Event Logs |
-| `.30` | WS01 | Windows 11 workstation, Sysmon and Event Logs |
+| `.20` | DC01 | Windows Server 2025 domain controller, Sysmon and Event Logs |
+| `.21` | SRV01 | Windows Server 2025 member server, Sysmon and Event Logs |
+| `.30` | WS01 | Windows 11 25H2 workstation, Sysmon and Event Logs |
 
 The vendored roles are:
 
@@ -187,7 +191,7 @@ The gate:
 - enforces the v2/OCSF/ClickHouse policy and exact Vector pins;
 - forbids the retired role/profile artifacts and shared aggregator tokens;
 - renders every Vector scenario from the actual role templates;
-- validates the rendered configs with the v2 Vector image;
+- validates the rendered configs with the pinned Vector 0.62 image;
 - exercises the source-bound token lifecycle against a loopback mock API; and
 - sends real rendered HEC payloads to a loopback receiver, checking distinct
   credentials, raw parser payloads, compression, and HEC acknowledgements.
