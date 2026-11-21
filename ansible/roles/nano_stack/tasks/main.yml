@@ -123,6 +123,7 @@
     dest: "{{ nanosiem_admin_password_file }}"
     mode: "0600"
   when: nanosiem_admin_password | length > 0
+  diff: false
   no_log: true
 
 - name: Generate the persistent range admin password on the SIEM
@@ -156,6 +157,7 @@
       url={{ nanosiem_base_url }}
     dest: "{{ nanosiem_admin_file }}"
     mode: "0600"
+  diff: false
   no_log: true
 
 - name: Check for a completed v2 install
@@ -178,8 +180,11 @@
          or (_nanosiem_marker.content | b64decode | trim) != nanosiem_version
          or nanosiem_rerun_install | bool }}
 
-# These are the installer's documented non-interactive inputs. There is no
-# private flag or TTY workaround: with every answer set, stdin may be closed.
+# These are the installer's documented inputs. install.sh asks its questions on
+# /dev/tty whenever it can open one, even with stdin closed, and Ansible's
+# become leaves a PTY attached. The installer therefore runs with no controlling
+# terminal (setsid), like a systemd or cloud-init install, so every question it
+# does not get an answer for here takes its documented unattended default.
 - name: Assemble the installer environment
   ansible.builtin.set_fact:
     _nanosiem_install_env:
@@ -197,8 +202,8 @@
 
 # Re-running install.sh over an existing install is an upgrade or restart.
 # Unattended, install.sh stops at the sender-pause check when the running Vector
-# predates v2.0.32 unless this is set. It also answers "Upgrade to X now?" if a
-# TTY is ever attached. It bypasses no digest, sizing or legacy-upgrade guard.
+# predates v2.0.32 unless this is set. It bypasses no digest, sizing or
+# legacy-upgrade guard.
 - name: Confirm the upgrade for an existing install
   ansible.builtin.set_fact:
     _nanosiem_install_env: "{{ _nanosiem_install_env | combine({'NANO_CONFIRM_UPGRADE': '1'}) }}"
@@ -248,24 +253,62 @@
     - _nanosiem_legacy_compose.stat.exists
     - _nanosiem_legacy_containers.stdout | trim | length > 0
 
+# Ansible's environment: keyword puts every variable on the become command
+# line, where any local user can read the admin password with ps. Hand the
+# installer its environment in a root-only file instead, and always remove it.
+- name: Require shell variable names in nanosiem_install_env
+  ansible.builtin.assert:
+    that:
+      - nanosiem_install_env.keys() | reject('match', '^[A-Za-z_][A-Za-z0-9_]*$') | list | length == 0
+    fail_msg: "nanosiem_install_env keys must be shell variable names."
+    quiet: true
+  when: _nanosiem_run_install | bool and nanosiem_install_env | length > 0
+
 - name: Run the documented v2 open-core installer
-  ansible.builtin.shell:
-    cmd: >-
-      bash {{ (nanosiem_source_dir ~ "/install.sh") | quote }}
-      < /dev/null >> {{ nanosiem_install_log | quote }} 2>&1
-    chdir: /root
-    executable: /bin/bash
-  environment: "{{ nanosiem_install_env | combine(_nanosiem_install_env) }}"
-  register: nanosiem_install
-  changed_when: true
-  failed_when: false
-  no_log: true
   when: _nanosiem_run_install | bool
+  block:
+    - name: Write the private installer environment
+      ansible.builtin.copy:
+        content: |
+          {% for key, value in (nanosiem_install_env | combine(_nanosiem_install_env)).items() %}
+          export {{ key }}={{ ((value | string | lower) if value is boolean else (value | string)) | quote }}
+          {% endfor %}
+        dest: "{{ nanosiem_install_env_file }}"
+        owner: root
+        group: root
+        mode: "0600"
+      diff: false
+      no_log: true
+
+    # The environment file is deleted as soon as it is read, so a cancelled
+    # deploy does not leave the password on disk. timeout -k escalates to
+    # SIGKILL if install.sh does not stop on SIGTERM.
+    - name: Run install.sh without a controlling terminal
+      ansible.builtin.shell:
+        cmd: >-
+          setsid --wait timeout -k 30 {{ nanosiem_install_timeout | int }}
+          bash -c 'set -e; . "$1"; rm -f -- "$1"; exec bash "$2"' nano-install
+          {{ nanosiem_install_env_file | quote }}
+          {{ (nanosiem_source_dir ~ "/install.sh") | quote }}
+          < /dev/null >> {{ nanosiem_install_log | quote }} 2>&1
+        chdir: /root
+        executable: /bin/bash
+      register: nanosiem_install
+      changed_when: true
+      failed_when: false
+      no_log: true
+  always:
+    - name: Remove the private installer environment
+      ansible.builtin.file:
+        path: "{{ nanosiem_install_env_file }}"
+        state: absent
 
 - name: Fail on an installer error
   ansible.builtin.fail:
     msg: >-
-      install.sh exited {{ nanosiem_install.rc }}. Inspect the private log
+      {% if nanosiem_install.rc in [124, 137] %}install.sh did not finish within
+      {{ nanosiem_install_timeout }} seconds and was stopped{% else %}install.sh
+      exited {{ nanosiem_install.rc }}{% endif %}. Inspect the private log
       {{ nanosiem_install_log }} on the SIEM box; its contents are not copied
       into Ansible output.
   when: nanosiem_install.rc is defined and nanosiem_install.rc != 0

@@ -26,6 +26,10 @@ nanosiem_legacy_compose_file: /opt/nanosiem/docker-compose.yml
 nanosiem_install_log: /root/nano-v2-install.log
 nanosiem_install_marker: /root/.nano-lab-v2-installed
 nanosiem_install_env: {}
+# Root-only file that hands install.sh its environment; removed after the run.
+nanosiem_install_env_file: /root/.nano-lab-install.env
+# install.sh is stopped and the deploy fails after this many seconds.
+nanosiem_install_timeout: 3600
 nanosiem_rerun_install: false
 
 # ---- Admin account ----

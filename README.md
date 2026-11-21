@@ -59,9 +59,18 @@ read-only home.
 - `NANO_REPO_URL`, `NANO_BRANCH`, and `NANO_INSTALL_DIR`
 - `NANO_SCHEMA_PROFILE=ocsf`
 
-There is no private installer flag, pseudo-TTY, or role-side stack patch. The
-installer owns `.env`, image digest verification, resource sizing, database
-migration, first-admin creation, and stack startup.
+There is no private installer flag or role-side stack patch. The installer owns
+`.env`, image digest verification, resource sizing, database migration,
+first-admin creation, and stack startup.
+
+`install.sh` asks its questions on `/dev/tty` whenever it can open one, even
+with stdin closed, and Ansible's `become` leaves a terminal attached. The role
+therefore runs the installer with no controlling terminal (`setsid`), as a
+systemd or cloud-init install would, so any question the environment above
+does not answer takes its documented unattended default. The environment,
+including the admin password, reaches the installer through a root-only file
+that is removed after the run, never through the process command line. The
+installer is stopped after `nanosiem_install_timeout` seconds (default 3600).
 
 When upgrading an existing range, the role stops the exact pre-v2 compose stack
 at `/opt/nanosiem/docker-compose.yml` before running the installer. It does not
