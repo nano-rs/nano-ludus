@@ -34,6 +34,12 @@
 # one source-bound ingest token for each parser route; no password or shared
 # ingest token is committed here or written beneath the controller's home.
 
+# Windows Server 2025 refuses to create a domain below the Windows Server 2016
+# functional level, and Ludus defaults to Win2012R2. WinThreshold is 2016.
+defaults:
+  ad_domain_functional_level: WinThreshold
+  ad_forest_functional_level: WinThreshold
+
 ludus:
   # =========================================================================
   # SIEM Box - nano v2 open core: OCSF, ClickHouse, Postgres, Vector
