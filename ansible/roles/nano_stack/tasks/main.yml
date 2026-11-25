@@ -165,6 +165,13 @@
     path: "{{ nanosiem_install_marker }}"
   register: nanosiem_done
 
+# An install that wrote its .env but failed before the marker is still an
+# existing install: rerunning it is an upgrade or restart.
+- name: Check for an existing nano install
+  ansible.builtin.stat:
+    path: "{{ nanosiem_install_dir }}/.env"
+  register: _nanosiem_existing_env
+
 # The marker records the installed release. Markers written before it did are
 # empty, so those ranges reinstall once.
 - name: Read the installed release
@@ -183,7 +190,7 @@
 # These are the installer's documented inputs. install.sh runs with
 # --non-interactive: it never reads /dev/tty (Ansible's become leaves a PTY
 # attached), every other question takes its documented default, and a missing
-# or invalid required value stops it with exit 4 before it changes anything.
+# or invalid required value stops it (exit 1) before it changes anything.
 - name: Assemble the installer environment
   ansible.builtin.set_fact:
     _nanosiem_install_env:
@@ -200,14 +207,16 @@
   when: _nanosiem_run_install | bool
 
 # Re-running install.sh over an existing install is an upgrade or restart.
-# Unattended, install.sh stops at the sender-pause check when the running Vector
-# predates v2.0.32 unless this is set. It bypasses no digest, sizing or
-# legacy-upgrade guard.
+# With --non-interactive, install.sh refuses any release-to-release upgrade
+# (and the sender-pause check for a pre-v2.0.32 Vector) unless this is set.
+# It bypasses no digest, sizing or legacy-upgrade guard.
 - name: Confirm the upgrade for an existing install
   ansible.builtin.set_fact:
     _nanosiem_install_env: "{{ _nanosiem_install_env | combine({'NANO_CONFIRM_UPGRADE': '1'}) }}"
   no_log: true
-  when: _nanosiem_run_install | bool and nanosiem_done.stat.exists
+  when: >-
+    _nanosiem_run_install | bool
+    and (nanosiem_done.stat.exists or _nanosiem_existing_env.stat.exists)
 
 - name: Add an explicit image version when configured
   ansible.builtin.set_fact:
@@ -282,7 +291,7 @@
     # The environment file is deleted as soon as it is read, so a cancelled
     # deploy does not leave the password on disk. timeout -k escalates to
     # SIGKILL if install.sh does not stop on SIGTERM.
-    - name: Run install.sh without a controlling terminal
+    - name: Run install.sh non-interactively
       ansible.builtin.shell:
         cmd: >-
           timeout -k 30 {{ nanosiem_install_timeout | int }}
@@ -306,9 +315,11 @@
   ansible.builtin.fail:
     msg: >-
       {% if nanosiem_install.rc in [124, 137] %}install.sh did not finish within
-      {{ nanosiem_install_timeout }} seconds and was stopped{% elif nanosiem_install.rc == 4 %}install.sh
-      stopped on missing or invalid installer input (exit 4) before changing
-      anything; the log names each value it needs{% else %}install.sh
+      {{ nanosiem_install_timeout }} seconds and was stopped{% elif nanosiem_install.rc == 2 %}install.sh
+      rejected an argument or option (exit 2){% elif nanosiem_install.rc == 4 %}install.sh
+      stopped at a question nothing answered (exit 4){% elif nanosiem_install.rc == 1 %}install.sh
+      refused or failed (exit 1). A missing or invalid installer input stops it
+      before anything changes, and the log names each value it needs{% else %}install.sh
       exited {{ nanosiem_install.rc }}{% endif %}. Inspect the private log
       {{ nanosiem_install_log }} on the SIEM box; its contents are not copied
       into Ansible output.

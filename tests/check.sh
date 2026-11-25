@@ -83,7 +83,7 @@ stack_defaults = (roles_dir / "nano_stack/defaults/main.yml").read_text()
 pinned = re.search(r'^nanosiem_version: "(2\.\d+\.\d+)"$', stack_defaults, re.M)
 if not pinned or 'nanosiem_ref: "v{{ nanosiem_version }}"' not in stack_defaults:
     errs.append("nano_stack does not pin a v2 open-core release tag")
-range_pin = re.search(r'^\s*nanosiem_version:\s*"?([^"\s#]+)"?', range_config, re.M)
+range_pin = re.search(r"^\s*nanosiem_version:", range_config, re.M)
 if range_pin:
     errs.append("range-config sets nanosiem_version; the nano_stack default is its only definition")
 if pinned and tuple(map(int, pinned.group(1).split("."))) < (2, 0, 35):
