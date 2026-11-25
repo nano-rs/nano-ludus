@@ -180,11 +180,10 @@
          or (_nanosiem_marker.content | b64decode | trim) != nanosiem_version
          or nanosiem_rerun_install | bool }}
 
-# These are the installer's documented inputs. install.sh asks its questions on
-# /dev/tty whenever it can open one, even with stdin closed, and Ansible's
-# become leaves a PTY attached. The installer therefore runs with no controlling
-# terminal (setsid), like a systemd or cloud-init install, so every question it
-# does not get an answer for here takes its documented unattended default.
+# These are the installer's documented inputs. install.sh runs with
+# --non-interactive: it never reads /dev/tty (Ansible's become leaves a PTY
+# attached), every other question takes its documented default, and a missing
+# or invalid required value stops it with exit 4 before it changes anything.
 - name: Assemble the installer environment
   ansible.builtin.set_fact:
     _nanosiem_install_env:
@@ -286,8 +285,8 @@
     - name: Run install.sh without a controlling terminal
       ansible.builtin.shell:
         cmd: >-
-          setsid --wait timeout -k 30 {{ nanosiem_install_timeout | int }}
-          bash -c 'set -e; . "$1"; rm -f -- "$1"; exec bash "$2"' nano-install
+          timeout -k 30 {{ nanosiem_install_timeout | int }}
+          bash -c 'set -e; . "$1"; rm -f -- "$1"; exec bash "$2" --non-interactive' nano-install
           {{ nanosiem_install_env_file | quote }}
           {{ (nanosiem_source_dir ~ "/install.sh") | quote }}
           < /dev/null >> {{ nanosiem_install_log | quote }} 2>&1
@@ -307,7 +306,9 @@
   ansible.builtin.fail:
     msg: >-
       {% if nanosiem_install.rc in [124, 137] %}install.sh did not finish within
-      {{ nanosiem_install_timeout }} seconds and was stopped{% else %}install.sh
+      {{ nanosiem_install_timeout }} seconds and was stopped{% elif nanosiem_install.rc == 4 %}install.sh
+      stopped on missing or invalid installer input (exit 4) before changing
+      anything; the log names each value it needs{% else %}install.sh
       exited {{ nanosiem_install.rc }}{% endif %}. Inspect the private log
       {{ nanosiem_install_log }} on the SIEM box; its contents are not copied
       into Ansible output.
