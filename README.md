@@ -66,8 +66,10 @@ first-admin creation, and stack startup.
 The role runs `install.sh --non-interactive` (nano 2.0.35 or later). The
 installer never reads the terminal that Ansible's `become` leaves attached, and
 every question the environment above does not answer takes its documented
-default. A missing or invalid required value stops it with exit 4 before it
-changes anything, and the role reports that as an installer input error. The environment,
+default. A missing or invalid required value stops it (exit 1) before it
+changes anything, and the installer log names each value it needs. The role
+also sets `NANO_CONFIRM_UPGRADE=1` over an existing install, because
+non-interactive mode refuses a release upgrade without it. The environment,
 including the admin password, reaches the installer through a root-only file
 that is removed after the run, never through the process command line. The
 installer is stopped after `nanosiem_install_timeout` seconds (default 3600).
