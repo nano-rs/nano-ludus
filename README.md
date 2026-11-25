@@ -79,11 +79,11 @@ There is no private installer flag or role-side stack patch. The installer owns
 `.env`, image digest verification, resource sizing, database migration,
 first-admin creation, and stack startup.
 
-`install.sh` asks its questions on `/dev/tty` whenever it can open one, even
-with stdin closed, and Ansible's `become` leaves a terminal attached. The role
-therefore runs the installer with no controlling terminal (`setsid`), as a
-systemd or cloud-init install would, so any question the environment above
-does not answer takes its documented unattended default. The environment,
+The role runs `install.sh --non-interactive` (nano 2.0.35 or later). The
+installer never reads the terminal that Ansible's `become` leaves attached, and
+every question the environment above does not answer takes its documented
+default. A missing or invalid required value stops it with exit 4 before it
+changes anything, and the role reports that as an installer input error. The environment,
 including the admin password, reaches the installer through a root-only file
 that is removed after the run, never through the process command line. The
 installer is stopped after `nanosiem_install_timeout` seconds (default 3600).
@@ -95,12 +95,10 @@ delete that stack's volumes, so its previous lab data remains recoverable.
 The range installs the open-core edition only. A customer runs
 `curl -fsSL https://get.nano.rs | bash`, which clones `nano-rs/nano`. The role
 pins one release and checks out its tag, so `install.sh`, the compose files and
-`images.lock` all describe that release:
-
-```yaml
-nanosiem_version: "2.0.34"
-nanosiem_ref: "v{{ nanosiem_version }}"
-```
+`images.lock` all describe that release. The release is set only by
+`nanosiem_version` in `ansible/roles/nano_stack/defaults/main.yml`, so moving
+the range to a new release is a one-line change there; `nanosiem_ref` derives
+the tag from it.
 
 It fails if the tag's `images.lock` records a different release. It also
 compares `https://get.nano.rs` with the tagged `install.sh` and reports a

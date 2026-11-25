@@ -58,10 +58,9 @@ ludus:
     role_vars:
       docker_users:
         - localuser
-      # The open-core release the range installs. The role checks out the
-      # matching v<version> tag of nano-rs/nano and runs its install.sh.
+      # The open-core release comes from the role's nanosiem_version default
+      # (ansible/roles/nano_stack/defaults/main.yml), its only definition.
       nanosiem_repo_url: "https://github.com/nano-rs/nano.git"
-      nanosiem_version: "2.0.34"
       nanosiem_schema_profile: ocsf
       nanosiem_parsers:
         - windows_event

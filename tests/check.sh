@@ -84,18 +84,20 @@ pinned = re.search(r'^nanosiem_version: "(2\.\d+\.\d+)"$', stack_defaults, re.M)
 if not pinned or 'nanosiem_ref: "v{{ nanosiem_version }}"' not in stack_defaults:
     errs.append("nano_stack does not pin a v2 open-core release tag")
 range_pin = re.search(r'^\s*nanosiem_version:\s*"?([^"\s#]+)"?', range_config, re.M)
-if pinned and range_pin and range_pin.group(1) != pinned.group(1):
-    errs.append(f"range-config nanosiem_version {range_pin.group(1)} differs from the nano_stack default {pinned.group(1)}")
+if range_pin:
+    errs.append("range-config sets nanosiem_version; the nano_stack default is its only definition")
+if pinned and tuple(map(int, pinned.group(1).split("."))) < (2, 0, 35):
+    errs.append(f"nano_stack pins {pinned.group(1)}; --non-interactive needs 2.0.35 or later")
 if re.search(r"^\s*nanosiem_ref:", range_config, re.M):
-    errs.append("range-config overrides nanosiem_ref; pin nanosiem_version instead")
+    errs.append("range-config overrides nanosiem_ref; bump the nano_stack nanosiem_version default instead")
 if "ClickHouse" not in stack_text:
     errs.append("nano_stack does not identify the v2 ClickHouse contract")
 if "grep -qw avx2 /proc/cpuinfo" not in stack_text or "x86-64-v3" not in stack_text:
     errs.append("nano_stack does not preflight the ClickHouse AVX2 requirement")
 if "lookup('ansible.builtin.env', 'HOME')" in stack_text or "delegate_to: localhost" in stack_text:
     errs.append("nano_stack writes secrets on the Ludus controller instead of the SIEM")
-if "--non-interactive" in stack_text or "NANO_NONINTERACTIVE" in stack_text:
-    errs.append("nano_stack uses an installer flag/env not present in the v2 contract")
+if 'exec bash "$2" --non-interactive' not in stack_text or "setsid" in stack_text:
+    errs.append("nano_stack does not run install.sh with --non-interactive")
 if "/opt/nanosiem/docker-compose.yml" not in stack_text or "down --remove-orphans" not in stack_text:
     errs.append("nano_stack does not retire the exact pre-v2 Ludus compose stack")
 if re.search(r"docker compose[^\n]*down[^\n]*(?:--volumes|(?:^|\s)-v(?:\s|$))", stack_text):
