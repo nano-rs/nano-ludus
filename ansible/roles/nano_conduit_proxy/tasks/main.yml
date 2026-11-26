@@ -16,8 +16,7 @@
   ansible.builtin.git:
     repo: "{{ conduit_repo_url }}"
     dest: "{{ conduit_deploy_dir }}/src"
-    version: "{{ conduit_repo_branch }}"
-    depth: 1
+    version: "{{ conduit_repo_version }}"
   when: conduit_build_from_source
   register: conduit_clone
 

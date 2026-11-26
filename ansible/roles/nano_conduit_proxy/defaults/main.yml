@@ -2,15 +2,25 @@
 # Conduit MITM Proxy Configuration
 
 # ---- Docker images ----
-# GHCR (public, no auth needed)
+# Conduit is a separate open-source project (github.com/the2dl/conduit), not
+# part of nano; the range only uses it. Its build workflow publishes public
+# GHCR images tagged with the short commit. The range pins one build by tag and
+# multi-architecture index digest, so a new Conduit push cannot change the lab.
+# To bump: pick a newer commit, read both digests from the registry, and update
+# conduit_version, conduit_repo_version and the two digests together.
 conduit_proxy_image: "ghcr.io/the2dl/conduit-proxy"
 conduit_api_image: "ghcr.io/the2dl/conduit-api"
-conduit_version: "latest"
+conduit_version: "0a07c56"
+conduit_proxy_digest: "sha256:cf51da6d803f32b661dad40281d482ddb1b288875f0586367b4c545a55d7356f"
+conduit_api_digest: "sha256:384c10c2103436ea86e97e4d59d912b8d8e5b3610cb1c7ebacbee119da1196f5"
+# Conduit's Dragonfly cache, pinned to a release by multi-architecture digest.
+conduit_dragonfly_image: "docker.dragonflydb.io/dragonflydb/dragonfly:v2.1.0@sha256:94891bb22ce2fb0f7a5a3ff1bb3b2fbbc5830e2523293e47723d87fa3e5b1184"
 
-# ---- Build from source (fallback if images aren't published yet) ----
+# ---- Build from source (fallback if the images are unavailable) ----
+# Builds the same commit locally; compose then runs the local images.
 conduit_build_from_source: false
 conduit_repo_url: "https://github.com/the2dl/conduit.git"
-conduit_repo_branch: "main"
+conduit_repo_version: "0a07c56e1a333ceb305eb5a176db2d63b59c8a38"
 
 # ---- Networking ----
 conduit_proxy_port: 8888

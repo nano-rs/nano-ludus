@@ -169,6 +169,18 @@ It needs only the stable `windows_event_log` source and Vector sink. The
 collectors talk the Vector protocol only to each other and reach nano over HEC,
 so they do not need to match the server's Vector version.
 
+## Conduit
+
+The optional HTTP telemetry comes from
+[Conduit](https://github.com/the2dl/conduit), a separate open-source proxy
+that the range uses but nano does not ship. The role pins its public GHCR
+images to one commit build by tag and digest, and its Dragonfly cache to a
+release digest, so a new upstream push cannot change the lab. To bump, update
+`conduit_version`, `conduit_repo_version` and the image digests together in
+`ansible/roles/nano_conduit_proxy/defaults/main.yml`. With
+`conduit_build_from_source: true` the role builds that same commit locally
+and runs the local images instead.
+
 ## Topology and roles
 
 The range is five VMs on VLAN 10:

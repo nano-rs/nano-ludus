@@ -158,6 +158,19 @@ if '"wget"' in conduit_compose or "/proc/net/tcp" not in conduit_compose:
 for listener_hex in ("2383", "20FB"):
     if f"*:{listener_hex})" not in conduit_compose:
         errs.append(f"Conduit healthcheck is missing listener 0x{listener_hex}")
+conduit_defaults = (roles_dir / "nano_conduit_proxy/defaults/main.yml").read_text()
+if not re.search(r'^conduit_version: "[0-9a-f]{7,40}"$', conduit_defaults, re.M):
+    errs.append("Conduit images are not pinned to a commit tag")
+for name in ("proxy", "api"):
+    if not re.search(rf'^conduit_{name}_digest: "sha256:[0-9a-f]{{64}}"$', conduit_defaults, re.M):
+        errs.append(f"conduit-{name} image is not pinned by digest")
+    if f'"@" ~ conduit_{name}_digest' not in conduit_compose:
+        errs.append(f"conduit-{name} compose image does not use its digest")
+if not re.search(r'^conduit_dragonfly_image: "[^"@]+:v[0-9.]+@sha256:[0-9a-f]{64}"$', conduit_defaults, re.M) \
+        or "image: {{ conduit_dragonfly_image }}" not in conduit_compose:
+    errs.append("Conduit's Dragonfly image is not pinned to a release digest")
+if not re.search(r'^conduit_repo_version: "[0-9a-f]{40}"$', conduit_defaults, re.M):
+    errs.append("Conduit source fallback is not pinned to a full commit")
 
 for e in errs:
     print("FAIL:", e)

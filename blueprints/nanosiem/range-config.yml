@@ -93,7 +93,8 @@ ludus:
       # deployed; source identity comes from the token, not sourcetype.
       nano_ingest_mode: hec
       nanosiem_siem_ip: "10.{{ range_second_octet }}.10.10"
-      # Conduit proxy — pulls from ghcr.io/the2dl/conduit-{proxy,api}:latest
+      # Conduit proxy: pinned ghcr.io/the2dl/conduit-{proxy,api} images (see the
+      # nano_conduit_proxy role defaults).
 
   # =========================================================================
   # Domain Controller - Primary DC for lab.local

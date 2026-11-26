@@ -5,7 +5,7 @@ version: '3.8'
 
 services:
   conduit-dragonfly:
-    image: docker.dragonflydb.io/dragonflydb/dragonfly
+    image: {{ conduit_dragonfly_image }}
     container_name: conduit-dragonfly
     command: ["--maxmemory", "512mb", "--proactor_threads", "1"]
     security_opt:
@@ -22,7 +22,7 @@ services:
     restart: unless-stopped
 
   conduit-proxy:
-    image: {{ conduit_proxy_image }}:{{ conduit_version }}
+    image: {{ ("conduit-proxy:" ~ conduit_version) if conduit_build_from_source | bool else (conduit_proxy_image ~ ":" ~ conduit_version ~ "@" ~ conduit_proxy_digest) }}
     container_name: conduit-proxy
     security_opt:
       - no-new-privileges:true
@@ -49,7 +49,7 @@ services:
     restart: unless-stopped
 
   conduit-api:
-    image: {{ conduit_api_image }}:{{ conduit_version }}
+    image: {{ ("conduit-api:" ~ conduit_version) if conduit_build_from_source | bool else (conduit_api_image ~ ":" ~ conduit_version ~ "@" ~ conduit_api_digest) }}
     container_name: conduit-api
     security_opt:
       - no-new-privileges:true
