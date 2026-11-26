@@ -29,7 +29,7 @@ ludus templates build -n win2025-server-x64-tpm-template
 ludus templates build -n win11-25h2-x64-enterprise-template
 
 # Add every source artifact, apply the blueprint, and deploy.
-ludus source add https://github.com/nano-rs/nano-ludus --all
+ludus source add https://github.com/nano-rs/nano-ludus --id nano-rs-nano-ludus --all
 ludus blueprint apply nano-rs-nano-ludus/nanosiem
 ludus range deploy
 ```
@@ -75,7 +75,8 @@ ludus range deploy -t user-defined-roles --only-roles NanoSIEM.nano_stack,NanoSI
 ```
 
 This installs the release the source pins. For a different one (2.0.35 or
-later), set `nanosiem_version` in the SIEM's `role_vars` and rerun the deploy.
+later), set `nanosiem_version` in the SIEM's `role_vars` in your range config
+(`ludus range config get` / `set`) and rerun the deploy.
 Don't drop that override until the pin catches up: nano can't go back to an
 older release.
 
