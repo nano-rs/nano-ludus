@@ -1,4 +1,4 @@
-# nano v2 — Ludus Lab
+# nano v2 Ludus Lab
 
 A complete [nano](https://nano.rs) v2 SIEM lab on [Ludus](https://ludus.cloud):
 an Active Directory domain, three Windows endpoints, Sysmon and Windows Event
@@ -63,6 +63,21 @@ To confirm events are arriving, run `scripts/range-events.sh [siem-ip] [hours]`
 that user's SSH and sudo passwords, and prints `nanosiem.ocsf_logs` counts by
 source, OCSF class and host. The query runs inside the `nano-clickhouse`
 container with the credentials it already holds.
+
+## Updating nano
+
+Update a running range in place, keeping its data and ingest tokens:
+
+```bash
+ludus source sync nano-rs-nano-ludus
+ludus source add nano-rs-nano-ludus --all --force
+ludus range deploy -t user-defined-roles --only-roles NanoSIEM.nano_stack,NanoSIEM.nano_vector_aggregator
+```
+
+This installs the release the source pins. For a different one (2.0.35 or
+later), set `nanosiem_version` in the SIEM's `role_vars` and rerun the deploy.
+Don't drop that override until the pin catches up: nano can't go back to an
+older release.
 
 ## v2 installer contract
 
