@@ -12,7 +12,7 @@ nanosiem_repo_url: "https://github.com/nano-rs/nano.git"
 # installer, compose files and images.lock all describe one release.
 # This is the only place the range names its release: bump it here.
 # 2.0.35 is the minimum, for install.sh --non-interactive.
-nanosiem_version: "2.0.35"
+nanosiem_version: "2.0.36"
 nanosiem_ref: "v{{ nanosiem_version }}"
 # The one-line installer endpoint. The role compares it with the tagged
 # install.sh and reports drift without failing, because get.nano.rs moves to
