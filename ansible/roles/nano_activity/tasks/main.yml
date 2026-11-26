@@ -1,0 +1,222 @@
+---
+# Installs the GHOSTS client and starts it in the logged-on user's session
+# (Ludus auto-logs on a domain user), so browsing, commands and documents come
+# from a real desktop session and show up in Sysmon, the event logs and Conduit.
+
+- name: Check for Microsoft Office
+  ansible.windows.win_stat:
+    path: "{{ nano_activity_office_exe }}"
+    get_checksum: false
+  register: _nano_activity_office
+
+- name: Read the installed GHOSTS version
+  ansible.windows.win_stat:
+    path: '{{ nano_activity_dir }}\version-{{ nano_activity_ghosts_version }}.txt'
+    get_checksum: false
+  register: _nano_activity_installed
+
+- name: Install GHOSTS {{ nano_activity_ghosts_version }}
+  when: not _nano_activity_installed.stat.exists
+  block:
+    - name: Stop a running GHOSTS client
+      ansible.windows.win_shell: |
+        Get-Process -Name ghosts -ErrorAction SilentlyContinue | Stop-Process -Force
+      changed_when: false
+
+    - name: Remove an earlier GHOSTS client
+      ansible.windows.win_file:
+        path: '{{ nano_activity_dir }}\x64'
+        state: absent
+
+    - name: Create the GHOSTS directory
+      ansible.windows.win_file:
+        path: "{{ nano_activity_dir }}"
+        state: directory
+
+    - name: Download the GHOSTS client
+      ansible.windows.win_get_url:
+        url: "{{ nano_activity_ghosts_url }}"
+        dest: '{{ nano_activity_dir }}\ghosts-client.zip'
+        checksum: "{{ nano_activity_ghosts_sha256 }}"
+        checksum_algorithm: sha256
+        use_proxy: false
+        timeout: 300
+      register: _nano_activity_download
+      retries: 5
+      delay: 10
+      until: _nano_activity_download is not failed
+
+    - name: Extract the GHOSTS client
+      community.windows.win_unzip:
+        src: '{{ nano_activity_dir }}\ghosts-client.zip'
+        dest: "{{ nano_activity_dir }}"
+        delete_archive: true
+
+    - name: Record the GHOSTS version
+      ansible.windows.win_copy:
+        content: "{{ nano_activity_ghosts_version }}\n"
+        dest: '{{ nano_activity_dir }}\version-{{ nano_activity_ghosts_version }}.txt'
+
+# GHOSTS writes its logs and state next to the executable, as the desktop user.
+- name: Let users write the GHOSTS and notes directories
+  ansible.windows.win_shell: |
+    foreach ($dir in @('{{ nano_activity_dir }}', '{{ nano_activity_notes_dir }}')) {
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        icacls $dir /grant '*S-1-5-32-545:(OI)(CI)M' /Q | Out-Null
+    }
+  changed_when: false
+
+# Standalone: no GHOSTS server, so reporting, updates and sockets are off.
+- name: Configure the GHOSTS client
+  ansible.windows.win_powershell:
+    script: |
+      $path = '{{ nano_activity_dir }}\x64\config\application.json'
+      $before = [IO.File]::ReadAllText($path)
+      $cfg = $before | ConvertFrom-Json
+      $cfg.Sockets.IsEnabled = $false
+      $cfg.ClientResults.IsEnabled = $false
+      $cfg.ClientUpdates.IsEnabled = $false
+      $cfg.Survey.IsEnabled = $false
+      $cfg.Id.IsEnabled = $false
+      $cfg.HealthIsEnabled = $false
+      $cfg.DisableStartup = $true
+      $after = $cfg | ConvertTo-Json -Depth 10
+      if ($after -ne $before) {
+          [IO.File]::WriteAllText($path, $after)
+          $Ansible.Changed = $true
+      } else {
+          $Ansible.Changed = $false
+      }
+  register: _nano_activity_app
+
+- name: Build the activity timeline
+  ansible.builtin.set_fact:
+    _nano_activity_handlers: >-
+      {{
+        [
+          {
+            'HandlerType': 'BrowserEdge',
+            'HandlerArgs': {
+              'isheadless': 'false',
+              'stickiness': 50,
+              'stickiness-depth-min': 2,
+              'stickiness-depth-max': 6,
+              'incognito': 'false',
+              'visited-remember': 10,
+              'actions-before-restart': 50
+            },
+            'Initial': 'about:blank',
+            'UtcTimeOn': '00:00:00',
+            'UtcTimeOff': '24:00:00',
+            'Loop': 'True',
+            'TimeLineEvents': [
+              {'Command': 'random', 'CommandArgs': nano_activity_sites,
+               'DelayAfter': nano_activity_browse_delay | int, 'DelayBefore': 0}
+            ]
+          },
+          {
+            'HandlerType': 'PowerShell',
+            'HandlerArgs': {'execution-probability': 100},
+            'Initial': '',
+            'UtcTimeOn': '00:00:00',
+            'UtcTimeOff': '24:00:00',
+            'Loop': 'True',
+            'TimeLineEvents': [
+              {'Command': 'random', 'CommandArgs': nano_activity_powershell_commands,
+               'DelayAfter': nano_activity_powershell_delay | int, 'DelayBefore': 60000}
+            ]
+          },
+          {
+            'HandlerType': 'Notepad',
+            'HandlerArgs': {
+              'execution-probability': 100,
+              'deletion-probability': 10,
+              'view-probability': 10,
+              'creation-probability': 50,
+              'modification-probability': 30,
+              'pdf-probability': 0,
+              'input-directory': nano_activity_notes_dir,
+              'output-directory': nano_activity_notes_dir,
+              'text-generation': 'random',
+              'min-paragraphs': 2,
+              'max-paragraphs': 8,
+              'delay-jitter': 50
+            },
+            'Initial': '',
+            'UtcTimeOn': '00:00:00',
+            'UtcTimeOff': '24:00:00',
+            'Loop': 'True',
+            'TimeLineEvents': [
+              {'Command': 'random', 'CommandArgs': [],
+               'DelayAfter': nano_activity_notepad_delay | int, 'DelayBefore': 120000}
+            ]
+          }
+        ]
+      }}
+
+- name: Add the Office document handlers
+  ansible.builtin.set_fact:
+    _nano_activity_handlers: >-
+      {{ _nano_activity_handlers + [{
+           'HandlerType': item,
+           'Initial': '',
+           'UtcTimeOn': '00:00:00',
+           'UtcTimeOff': '24:00:00',
+           'Loop': 'True',
+           'TimeLineEvents': [
+             {'Command': 'create', 'CommandArgs': ['%homedrive%%homepath%\Documents'],
+              'DelayAfter': nano_activity_office_delay | int, 'DelayBefore': 300000}
+           ]
+         }] }}
+  loop: [Word, Excel, PowerPoint]
+  when: _nano_activity_office.stat.exists
+
+- name: Write the activity timeline
+  ansible.windows.win_copy:
+    content: "{{ {'Status': 'Run', 'TimeLineHandlers': _nano_activity_handlers} | to_nice_json }}"
+    dest: '{{ nano_activity_dir }}\x64\config\timeline.json'
+  register: _nano_activity_timeline
+
+# Edge's first-run pages would otherwise sit in front of every browser session.
+- name: Skip the Edge first-run experience
+  ansible.windows.win_regedit:
+    path: HKLM:\SOFTWARE\Policies\Microsoft\Edge
+    name: HideFirstRunExperience
+    data: 1
+    type: dword
+
+# Starts GHOSTS in every interactive session of a member of Users, which is the
+# auto-logon user's session after each boot.
+- name: Start GHOSTS at user logon
+  community.windows.win_scheduled_task:
+    name: nano-ghosts
+    description: Simulated user activity for the nano lab (GHOSTS client)
+    actions:
+      - path: '{{ nano_activity_dir }}\x64\ghosts.exe'
+        working_directory: '{{ nano_activity_dir }}\x64'
+    triggers:
+      - type: logon
+    group: BUILTIN\Users
+    logon_type: group
+    run_level: limited
+    multiple_instances: 2
+    execution_time_limit: PT0S
+    state: present
+    enabled: true
+
+- name: Restart GHOSTS with the current configuration
+  ansible.windows.win_shell: |
+    Get-Process -Name ghosts -ErrorAction SilentlyContinue | Stop-Process -Force
+    Start-Sleep -Seconds 2
+    Start-ScheduledTask -TaskName nano-ghosts
+  when: >-
+    not _nano_activity_installed.stat.exists
+    or _nano_activity_app is changed
+    or _nano_activity_timeline is changed
+
+- name: Report the activity
+  ansible.builtin.debug:
+    msg: >-
+      GHOSTS {{ nano_activity_ghosts_version }} runs in the logged-on user's
+      session: browsing, PowerShell, Notepad{{ ', Word, Excel and PowerPoint'
+      if _nano_activity_office.stat.exists else ' (no Office installed, so no documents)' }}.

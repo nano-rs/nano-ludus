@@ -143,6 +143,16 @@
         - { name: "ProxyServer", data: "{{ conduit_proxy_ip }}:{{ conduit_proxy_port }}", type: string }
         - { name: "ProxyOverride", data: "localhost;127.0.0.1;10.*;*.lab.local;<local>", type: string }
 
+    # Without this policy, user apps such as browsers read only their own
+    # per-user proxy settings and ignore the machine-wide ones above. With it,
+    # every user, including ones who log on later, goes through Conduit.
+    - name: Apply the machine-wide proxy to every user
+      ansible.windows.win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings
+        name: ProxySettingsPerUser
+        data: 0
+        type: dword
+
     - name: Set proxy for all users (default user HKCU via HKU\.DEFAULT)
       ansible.windows.win_regedit:
         path: HKU:\.DEFAULT\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings

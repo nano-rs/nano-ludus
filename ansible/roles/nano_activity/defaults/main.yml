@@ -1,0 +1,62 @@
+---
+# Simulated user activity with the GHOSTS client from Carnegie Mellon SEI
+# (https://github.com/cmu-sei/GHOSTS, MIT-style license). The client is
+# downloaded at a pinned release and checksum when the role runs. It runs
+# standalone from a local timeline, with no GHOSTS server.
+
+nano_activity_ghosts_version: "9.3.0"
+nano_activity_ghosts_url: "https://github.com/cmu-sei/GHOSTS/releases/download/v{{ nano_activity_ghosts_version }}/ghosts-client-windows-x64.zip"
+nano_activity_ghosts_sha256: "d092afa18e7c9e00cea7aa55fc3c60fb2255336bb13319fd9d9ae12940e3a87e"
+
+nano_activity_dir: 'C:\ProgramData\nano\ghosts'
+# Where the Notepad handler writes and edits text files.
+nano_activity_notes_dir: 'C:\Users\Public\Documents\Notes'
+
+# Milliseconds between actions for each kind of activity.
+nano_activity_browse_delay: 90000
+nano_activity_powershell_delay: 300000
+nano_activity_notepad_delay: 600000
+nano_activity_office_delay: 1200000
+
+# Office documents are created only when Office is installed on the host
+# (for example with the Ludus `windows.office_version` option).
+nano_activity_office_exe: 'C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE'
+
+# Browsing goes through the system proxy, which is Conduit when the agent role
+# enables it, so these requests show up in the proxy logs.
+nano_activity_sites:
+  - https://www.wikipedia.org
+  - https://learn.microsoft.com
+  - https://www.microsoft.com
+  - https://github.com
+  - https://stackoverflow.com
+  - https://news.ycombinator.com
+  - https://www.bbc.com/news
+  - https://www.reuters.com
+  - https://www.nytimes.com
+  - https://weather.com
+  - https://www.espn.com
+  - https://www.imdb.com
+  - https://www.amazon.com
+  - https://www.reddit.com
+  - https://www.linkedin.com
+  - https://docs.python.org
+  - https://www.apple.com
+  - https://www.zillow.com
+  - https://www.nasa.gov
+  - https://www.office.com
+
+# Everyday commands a user or admin might run. Each run picks one at random.
+nano_activity_powershell_commands:
+  - "Get-Process | Sort-Object CPU -Descending | Select-Object -First 10"
+  - "Get-ChildItem $env:USERPROFILE\\Documents"
+  - "Get-Service | Where-Object Status -eq Running"
+  - "Resolve-DnsName www.microsoft.com"
+  - "Test-NetConnection -ComputerName $env:USERDNSDOMAIN -Port 445"
+  - "Get-ChildItem \\\\$env:USERDNSDOMAIN\\SYSVOL"
+  - "whoami /groups"
+  - "ipconfig /all"
+  - "net use"
+  - "nltest /dsgetdc:$env:USERDNSDOMAIN"
+  - "Get-NetTCPConnection -State Established"
+  - "Get-ChildItem $env:TEMP | Measure-Object"

@@ -1,0 +1,34 @@
+---
+# Fill the lab domain with users, groups, computers, OUs and misconfigured ACLs
+# using BadBlood (https://github.com/davidprowe/BadBlood, GPL-3.0). BadBlood is
+# downloaded at a pinned commit when the role runs; it is not vendored here.
+
+nano_ad_seed_badblood_commit: "b3c632514557b2b910db9d936fe39e201109c719"
+nano_ad_seed_badblood_url: "https://codeload.github.com/davidprowe/BadBlood/zip/{{ nano_ad_seed_badblood_commit }}"
+nano_ad_seed_badblood_sha256: "57937305979913640a7d6f79389d3e436bc7bc84bb190c72cb261a4813c22f7e"
+
+# Lab-sized defaults. BadBlood's own defaults (2500/500/100) take much longer.
+nano_ad_seed_users: 300
+nano_ad_seed_groups: 60
+nano_ad_seed_computers: 30
+# BadBlood's legacy LAPS schema step is skipped by default; Windows Server 2025
+# ships Windows LAPS instead.
+nano_ad_seed_skip_laps: true
+
+# BadBlood picks random existing accounts for weak passwords, SPNs and
+# AS-REP roasting. These are excluded so it cannot change the accounts Ludus and
+# the range use. The Ludus domain admin and user names come from the range
+# defaults when they are set.
+nano_ad_seed_protected_accounts:
+  - Administrator
+  - Guest
+  - krbtgt
+  - DefaultAccount
+  - WDAGUtilityAccount
+  - localuser
+  - "{{ (defaults | default({})).ad_domain_admin | default('domainadmin') }}"
+  - "{{ (defaults | default({})).ad_domain_user | default('domainuser') }}"
+
+nano_ad_seed_dir: 'C:\ProgramData\nano\ad-seed'
+# Seconds allowed for the BadBlood run.
+nano_ad_seed_timeout: 3600

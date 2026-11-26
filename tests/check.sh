@@ -140,7 +140,7 @@ if not re.search(r'vector_archive_sha256:\s*"[0-9a-f]{64}"', agent_defaults):
 if re.search(r"^\s+nano_ingest_token:\s*\S", range_config, re.M):
     errs.append("range-config commits a shared aggregator token")
 secret_keys = r"(nanosiem_admin_password|nano_api_password|nano_api_key|nano_ingest_token)"
-for p in [root / "blueprints/nanosiem/range-config.yml", *roles_dir.glob("*/defaults/main.yml")]:
+for p in [*root.glob("blueprints/*/range-config.yml"), *roles_dir.glob("*/defaults/main.yml")]:
     for m in re.finditer(rf"^\s*{secret_keys}:\s*(\S.*)$", p.read_text(), re.M):
         if m.group(2).strip() not in ('""', "''"):
             errs.append(f"{p.relative_to(root)}: {m.group(1)} has a committed value")
@@ -158,6 +158,47 @@ if '"wget"' in conduit_compose or "/proc/net/tcp" not in conduit_compose:
 for listener_hex in ("2383", "20FB"):
     if f"*:{listener_hex})" not in conduit_compose:
         errs.append(f"Conduit healthcheck is missing listener 0x{listener_hex}")
+
+# The activity blueprint is the base blueprint plus lines marked "# activity:".
+# A marked line directly follows its comment; it is an addition, or replaces the
+# base line with the same key in that place (for example ram_gb).
+activity_config = (root / "blueprints/nanosiem-activity/range-config.yml").read_text()
+def config_lines(text):
+    return [l for l in text.splitlines() if l.strip() and not l.lstrip().startswith("#")]
+def key_of(line):
+    return line.strip().lstrip("- ").split(":", 1)[0]
+base_lines = config_lines(range_config)
+activity_kept, activity_marked_keys = [], set()
+marked = False
+for line in activity_config.splitlines():
+    stripped = line.strip()
+    if stripped.lstrip("#").strip().startswith("activity:") and stripped.startswith("#"):
+        marked = True
+        continue
+    if not stripped or stripped.startswith("#"):
+        continue
+    if marked:
+        activity_marked_keys.add(key_of(line))
+        marked = False
+        continue
+    activity_kept.append(line)
+import difflib
+for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, base_lines, activity_kept, autojunk=False).get_opcodes():
+    if tag == "equal":
+        continue
+    replaced = base_lines[i1:i2]
+    if tag == "delete" and all(key_of(l) in activity_marked_keys for l in replaced):
+        continue
+    errs.append(
+        "nanosiem-activity range config drifted from nanosiem: "
+        f"{tag} {replaced!r} -> {activity_kept[j1:j2]!r}; mark intended changes with '# activity:'"
+    )
+for role in ("nano_ad_seed", "nano_activity"):
+    defaults_text = (roles_dir / role / "defaults/main.yml").read_text()
+    if not re.search(r'_sha256: "[0-9a-f]{64}"', defaults_text):
+        errs.append(f"{role} downloads without a sha256 pin")
+if "NanoSIEM.nano_ad_seed" in range_config or "NanoSIEM.nano_activity" in range_config:
+    errs.append("the base nanosiem blueprint must not run the optional activity roles")
 
 for e in errs:
     print("FAIL:", e)

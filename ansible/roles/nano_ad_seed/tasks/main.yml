@@ -1,0 +1,115 @@
+---
+# Runs BadBlood once on the primary domain controller. A marker records the
+# BadBlood commit and counts, so later deploys skip it instead of adding another
+# batch of objects.
+
+- name: Check the protected account names
+  ansible.builtin.assert:
+    that:
+      - item is match('^[A-Za-z0-9._-]+$')
+    fail_msg: "nano_ad_seed_protected_accounts entry '{{ item }}' is not a plain account name."
+    quiet: true
+  loop: "{{ nano_ad_seed_protected_accounts }}"
+
+- name: Read the seed marker
+  ansible.windows.win_stat:
+    path: '{{ nano_ad_seed_dir }}\seeded.txt'
+    get_checksum: false
+  register: _nano_ad_seed_marker
+
+- name: Seed the domain with BadBlood
+  when: not _nano_ad_seed_marker.stat.exists
+  block:
+    - name: Create the seed directory
+      ansible.windows.win_file:
+        path: "{{ nano_ad_seed_dir }}"
+        state: directory
+
+    - name: Download BadBlood at the pinned commit
+      ansible.windows.win_get_url:
+        url: "{{ nano_ad_seed_badblood_url }}"
+        dest: '{{ nano_ad_seed_dir }}\badblood.zip'
+        checksum: "{{ nano_ad_seed_badblood_sha256 }}"
+        checksum_algorithm: sha256
+        use_proxy: false
+      register: _nano_ad_seed_download
+      retries: 5
+      delay: 10
+      until: _nano_ad_seed_download is not failed
+
+    # A fresh copy each attempt, so a retry after a failed run patches cleanly.
+    - name: Remove an earlier BadBlood copy
+      ansible.windows.win_file:
+        path: '{{ nano_ad_seed_dir }}\BadBlood-{{ nano_ad_seed_badblood_commit }}'
+        state: absent
+
+    - name: Extract BadBlood
+      community.windows.win_unzip:
+        src: '{{ nano_ad_seed_dir }}\badblood.zip'
+        dest: "{{ nano_ad_seed_dir }}"
+
+    # BadBlood chooses weak-password, SPN and AS-REP targets from every user in
+    # the domain. Rewrite those user lookups to skip the protected accounts.
+    - name: Exclude the protected accounts from BadBlood's user lists
+      ansible.windows.win_powershell:
+        parameters:
+          Root: '{{ nano_ad_seed_dir }}\BadBlood-{{ nano_ad_seed_badblood_commit }}'
+          Protected: "{{ nano_ad_seed_protected_accounts }}"
+        script: |
+          param([string]$Root, [string[]]$Protected)
+          $ErrorActionPreference = 'Stop'
+          $list = ($Protected | ForEach-Object { "'$_'" }) -join ','
+          $pattern = '(?im)^([ \t]*\$\w+[ \t]*=[ \t]*)Get-ADUser -Filter \*[ \t]*(\r?)$'
+          $replacement = '$1(Get-ADUser -Filter * | Where-Object { @(' + $list + ') -notcontains $$_.SamAccountName })$2'
+          $patched = @()
+          foreach ($file in Get-ChildItem -Path $Root -Recurse -Filter *.ps1) {
+              $text = [IO.File]::ReadAllText($file.FullName)
+              if ([regex]::IsMatch($text, $pattern)) {
+                  $text = [regex]::Replace($text, $pattern, $replacement)
+                  [IO.File]::WriteAllText($file.FullName, $text)
+                  $patched += [regex]::Matches($text, '(?im)^.*Where-Object \{ @\(.*$') | ForEach-Object { "$($file.Name): $($_.Value.Trim())" }
+              }
+          }
+          if ($patched.Count -ne 4) { throw "Expected 4 BadBlood user lookups to patch, found $($patched.Count)" }
+          $Ansible.Result = $patched
+      register: _nano_ad_seed_patch
+
+    - name: Show the patched user lookups
+      ansible.builtin.debug:
+        var: _nano_ad_seed_patch.result
+
+    - name: Run BadBlood (this takes several minutes)
+      ansible.windows.win_powershell:
+        chdir: '{{ nano_ad_seed_dir }}\BadBlood-{{ nano_ad_seed_badblood_commit }}'
+        parameters:
+          UserCount: "{{ nano_ad_seed_users | int }}"
+          GroupCount: "{{ nano_ad_seed_groups | int }}"
+          ComputerCount: "{{ nano_ad_seed_computers | int }}"
+          SkipLaps: "{{ nano_ad_seed_skip_laps | bool }}"
+        script: |
+          param([int]$UserCount, [int]$GroupCount, [int]$ComputerCount, [bool]$SkipLaps)
+          $bb = @{
+              UserCount = $UserCount
+              GroupCount = $GroupCount
+              ComputerCount = $ComputerCount
+              NonInteractive = $true
+          }
+          if ($SkipLaps) { $bb.SkipLapsInstall = $true }
+          & .\Invoke-BadBlood.ps1 @bb *> '{{ nano_ad_seed_dir }}\badblood.log'
+          $Ansible.Result = (Get-ADUser -Filter *).Count
+      async: "{{ nano_ad_seed_timeout | int }}"
+      poll: 30
+      register: _nano_ad_seed_run
+
+    - name: Record the seed
+      ansible.windows.win_copy:
+        content: |
+          badblood {{ nano_ad_seed_badblood_commit }}
+          users {{ nano_ad_seed_users }} groups {{ nano_ad_seed_groups }} computers {{ nano_ad_seed_computers }}
+        dest: '{{ nano_ad_seed_dir }}\seeded.txt'
+
+    - name: Report the seeded domain
+      ansible.builtin.debug:
+        msg: >-
+          BadBlood seeded the domain: {{ _nano_ad_seed_run.result }} users in AD.
+          Its log is {{ nano_ad_seed_dir }}\badblood.log on the DC.

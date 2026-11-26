@@ -1,0 +1,198 @@
+# nano SIEM Lab Blueprint for Ludus, with simulated activity
+#
+# This is the nanosiem blueprint plus three additions, marked "activity:" below:
+#   - DC01 seeds the domain with BadBlood users, groups, computers and ACLs
+#   - SRV01 and WS01 run GHOSTS: browsing through Conduit, PowerShell and Notepad
+#   - WS01 gets Office 2021, so GHOSTS also creates Word, Excel and PowerPoint files
+#
+# tests/check.sh requires every line of the nanosiem range config to appear
+# here in the same order, so the two blueprints cannot drift apart.
+#
+# Topology:
+#   [Win DC01]  ─┐  event logs ──► Vector agent ──┐
+#   [Win SRV01] ─┤  HTTP traffic ──► Conduit ───┤──► [Proxy/Aggregator] ──HEC──► [SIEM]
+#   [Win WS01]  ─┘  (MITM + CA trust)          │    (Vector + Conduit)          (v2 OCSF)
+#                                                └──► (Debian .10.11)             (ClickHouse)
+#
+# VLAN 10: 10.x.10.0/24 (where x = your Ludus range's second octet)
+#
+# Usage (this repo is a Ludus Source — see README "Packaging"):
+#   1. ludus source add <this repo>            # or `-d .` for a local clone
+#   2. ludus blueprint apply nano-rs-nano-ludus/nanosiem-activity
+#   3. ludus range deploy
+#
+# Before deploying:
+#   - Build required templates: debian-13, win2025-server-tpm, win11-25h2-enterprise
+#     (the two Windows templates come from ludus-source-bsl)
+#
+# Role names below carry the `NanoSIEM.` prefix (NAN-2358). The five nano_*
+# roles are vendored under `ansible/roles/`, and every one of them declares
+# `author: NanoSIEM` in its meta/main.yml — so ansible-galaxy installs them as
+# `NanoSIEM.<role_name>`, not under the bare directory name. Referencing them
+# bare here makes `ludus range deploy` fail to resolve the roles, which is what
+# an external tester hit: the range would not deploy until every entry was
+# hand-prefixed. `geerlingguy.docker` was already namespaced, which is why it
+# was the only one that resolved.
+#
+# If you rename a role or drop its `author`, update BOTH sides or this breaks
+# again silently.
+#
+# The SIEM role generates one random admin password per range and stores it on
+# that VM. The aggregator reads it through an Ansible delegated task to issue
+# one source-bound ingest token for each parser route; no password or shared
+# ingest token is committed here or written beneath the controller's home.
+
+# Windows Server 2025 refuses to create a domain below the Windows Server 2016
+# functional level, and Ludus defaults to Win2012R2. WinThreshold is 2016.
+defaults:
+  ad_domain_functional_level: WinThreshold
+  ad_forest_functional_level: WinThreshold
+
+ludus:
+  # =========================================================================
+  # SIEM Box - nano v2 open core: OCSF, ClickHouse, Postgres, Vector
+  # =========================================================================
+  - vm_name: "{{ range_id }}-nanosiem"
+    hostname: "{{ range_id }}-SIEM"
+    template: debian-13-x64-server-template
+    vlan: 10
+    ip_last_octet: 10
+    ram_gb: 16
+    cpus: 8
+    linux: true
+    roles:
+      - geerlingguy.docker
+      - NanoSIEM.nano_stack
+    role_vars:
+      docker_users:
+        - localuser
+      # The open-core release comes from the role's nanosiem_version default
+      # (ansible/roles/nano_stack/defaults/main.yml), its only definition.
+      nanosiem_repo_url: "https://github.com/nano-rs/nano.git"
+      nanosiem_schema_profile: ocsf
+      nanosiem_parsers:
+        - windows_event
+        - windows_sysmon
+        - conduit_proxy
+
+  # =========================================================================
+  # Proxy / Aggregator - Vector agent intake, source-bound HEC + Conduit
+  # =========================================================================
+  - vm_name: "{{ range_id }}-proxy"
+    hostname: "{{ range_id }}-PROXY"
+    template: debian-13-x64-server-template
+    vlan: 10
+    ip_last_octet: 11
+    ram_gb: 8
+    cpus: 4
+    linux: true
+    roles:
+      - geerlingguy.docker
+      - name: NanoSIEM.nano_vector_aggregator
+        depends_on:
+          - vm_name: "{{ range_id }}-nanosiem"
+            role: NanoSIEM.nano_stack
+      - NanoSIEM.nano_conduit_proxy
+    role_vars:
+      docker_users:
+        - localuser
+      # HEC target on the SIEM box. The role issues one token bound to each of
+      # windows_event, windows_sysmon and conduit_proxy after their parsers are
+      # deployed; source identity comes from the token, not sourcetype.
+      nano_ingest_mode: hec
+      nanosiem_siem_ip: "10.{{ range_second_octet }}.10.10"
+      # Conduit proxy — pulls from ghcr.io/the2dl/conduit-{proxy,api}:latest
+
+  # =========================================================================
+  # Domain Controller - Primary DC for lab.local
+  # =========================================================================
+  - vm_name: "{{ range_id }}-dc01"
+    hostname: "{{ range_id }}-DC01"
+    template: win2025-server-x64-tpm-template
+    vlan: 10
+    ip_last_octet: 20
+    ram_gb: 8
+    cpus: 4
+    windows:
+      sysprep: true
+    domain:
+      fqdn: lab.local
+      role: primary-dc
+    roles:
+      - NanoSIEM.nano_sysmon
+      - NanoSIEM.nano_vector_agent
+      # activity: seed AD after collection starts, so the seeding is logged
+      - NanoSIEM.nano_ad_seed
+    role_vars:
+      # Points to the aggregator/proxy box (last octet 11)
+      vector_aggregator_ip: "10.{{ range_second_octet }}.10.11"
+      vector_aggregator_port: 9000
+      vector_eventlog_channels:
+        - "Application"
+        - "System"
+        - "Security"
+        - "Microsoft-Windows-Sysmon/Operational"
+        - "Microsoft-Windows-PowerShell/Operational"
+        - "Microsoft-Windows-Windows Defender/Operational"
+        - "Directory Service"
+        - "DNS Server"
+      # Conduit MITM proxy
+      conduit_proxy_enabled: true
+      conduit_proxy_ip: "10.{{ range_second_octet }}.10.11"
+
+  # =========================================================================
+  # Member Server - General purpose Windows Server
+  # =========================================================================
+  - vm_name: "{{ range_id }}-srv01"
+    hostname: "{{ range_id }}-SRV01"
+    template: win2025-server-x64-tpm-template
+    vlan: 10
+    ip_last_octet: 21
+    ram_gb: 4
+    cpus: 2
+    windows:
+      sysprep: true
+    domain:
+      fqdn: lab.local
+      role: member
+    roles:
+      - NanoSIEM.nano_sysmon
+      - NanoSIEM.nano_vector_agent
+      # activity: GHOSTS browsing, PowerShell and Notepad
+      - NanoSIEM.nano_activity
+    role_vars:
+      vector_aggregator_ip: "10.{{ range_second_octet }}.10.11"
+      vector_aggregator_port: 9000
+      conduit_proxy_enabled: true
+      conduit_proxy_ip: "10.{{ range_second_octet }}.10.11"
+
+  # =========================================================================
+  # Windows Workstation - End-user machine
+  # =========================================================================
+  - vm_name: "{{ range_id }}-ws01"
+    hostname: "{{ range_id }}-WS01"
+    template: win11-25h2-x64-enterprise-template
+    vlan: 10
+    ip_last_octet: 30
+    # activity: 8 GB instead of 4 for Office plus GHOSTS
+    ram_gb: 8
+    cpus: 2
+    windows:
+      sysprep: true
+      # activity: Office for the GHOSTS Word, Excel and PowerPoint handlers
+      office_version: 2021
+      # activity: 64-bit Office
+      office_arch: 64bit
+    domain:
+      fqdn: lab.local
+      role: member
+    roles:
+      - NanoSIEM.nano_sysmon
+      - NanoSIEM.nano_vector_agent
+      # activity: GHOSTS browsing, PowerShell, Notepad and Office documents
+      - NanoSIEM.nano_activity
+    role_vars:
+      vector_aggregator_ip: "10.{{ range_second_octet }}.10.11"
+      vector_aggregator_port: 9000
+      conduit_proxy_enabled: true
+      conduit_proxy_ip: "10.{{ range_second_octet }}.10.11"
