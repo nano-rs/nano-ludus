@@ -56,3 +56,15 @@ conduit_proxy_enabled: false
 conduit_proxy_ip: ""        # IP of the proxy box (same as aggregator typically)
 conduit_proxy_port: 8888
 conduit_api_port: 8443
+# Hosts that skip Conduit. Office installs and updates are gigabytes of signed
+# Microsoft CDN downloads with nothing to inspect, and decrypting them can stall
+# the Office install.
+conduit_proxy_bypass:
+  - localhost
+  - 127.0.0.1
+  - "10.*"
+  - "*.lab.local"
+  - officecdn.microsoft.com
+  - "*.officecdn.microsoft.com"
+  - "*.cdn.office.net"
+  - "*.officecdn.microsoft.com.edgesuite.net"
