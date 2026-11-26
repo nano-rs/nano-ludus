@@ -48,8 +48,9 @@
         src: '{{ nano_ad_seed_dir }}\badblood.zip'
         dest: "{{ nano_ad_seed_dir }}"
 
-    # BadBlood chooses weak-password, SPN and AS-REP targets from every user in
-    # the domain. Rewrite those user lookups to skip the protected accounts.
+    # BadBlood picks random users for group nesting, SPNs, AS-REP roasting and
+    # ACL grants from every user in the domain. Rewrite those lookups to skip the
+    # protected accounts.
     - name: Exclude the protected accounts from BadBlood's user lists
       ansible.windows.win_powershell:
         parameters:
@@ -70,7 +71,16 @@
                   $patched += [regex]::Matches($text, '(?im)^.*Where-Object \{ @\(.*$') | ForEach-Object { "$($file.Name): $($_.Value.Trim())" }
               }
           }
-          if ($patched.Count -ne 4) { throw "Expected 4 BadBlood user lookups to patch, found $($patched.Count)" }
+          # The ACL randomizer lists users with Get-ADObject instead.
+          $acl = Join-Path $Root 'AD_Permissions_Randomizer\GenerateRandomPermissions.ps1'
+          $old = "get-adobject -Filter {objectclass -eq 'user'} -ResultSetSize 2500 -Server `$setdc|Where-object -Property objectclass -eq user"
+          $new = "get-adobject -Filter {objectclass -eq 'user'} -Properties SamAccountName -ResultSetSize 2500 -Server `$setdc|Where-object -Property objectclass -eq user | Where-Object { @($list) -notcontains `$_.SamAccountName }"
+          $text = [IO.File]::ReadAllText($acl)
+          if ($text.Contains($old)) {
+              [IO.File]::WriteAllText($acl, $text.Replace($old, $new))
+              $patched += "GenerateRandomPermissions.ps1: $new"
+          }
+          if ($patched.Count -ne 5) { throw "Expected 5 BadBlood user lookups to patch, found $($patched.Count)" }
           $Ansible.Result = $patched
       register: _nano_ad_seed_patch
 
@@ -88,6 +98,7 @@
           SkipLaps: "{{ nano_ad_seed_skip_laps | bool }}"
         script: |
           param([int]$UserCount, [int]$GroupCount, [int]$ComputerCount, [bool]$SkipLaps)
+          $before = @(Get-ADUser -Filter *).Count
           $bb = @{
               UserCount = $UserCount
               GroupCount = $GroupCount
@@ -96,7 +107,14 @@
           }
           if ($SkipLaps) { $bb.SkipLapsInstall = $true }
           & .\Invoke-BadBlood.ps1 @bb *> '{{ nano_ad_seed_dir }}\badblood.log'
-          $Ansible.Result = (Get-ADUser -Filter *).Count
+          $after = @(Get-ADUser -Filter *).Count
+          # BadBlood creates UserCount - 1 users and skips a few name collisions;
+          # far fewer means it stopped early, so fail and retry next deploy.
+          if (($after - $before) -lt [Math]::Floor(($UserCount - 1) * 0.8)) {
+              $tail = (Get-Content '{{ nano_ad_seed_dir }}\badblood.log' -Tail 20) -join "`n"
+              throw "BadBlood added $($after - $before) users, expected about $($UserCount - 1). Log tail:`n$tail"
+          }
+          $Ansible.Result = $after
       async: "{{ nano_ad_seed_timeout | int }}"
       poll: 30
       register: _nano_ad_seed_run

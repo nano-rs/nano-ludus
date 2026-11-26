@@ -134,7 +134,6 @@
               'view-probability': 10,
               'creation-probability': 50,
               'modification-probability': 30,
-              'pdf-probability': 0,
               'input-directory': nano_activity_notes_dir,
               'output-directory': nano_activity_notes_dir,
               'text-generation': 'random',
@@ -173,7 +172,7 @@
 
 - name: Write the activity timeline
   ansible.windows.win_copy:
-    content: "{{ {'Status': 'Run', 'TimeLineHandlers': _nano_activity_handlers} | to_nice_json }}"
+    content: "{{ {'Id': inventory_hostname | to_uuid, 'Status': 'Run', 'TimeLineHandlers': _nano_activity_handlers} | to_nice_json }}"
     dest: '{{ nano_activity_dir }}\x64\config\timeline.json'
   register: _nano_activity_timeline
 
@@ -185,24 +184,44 @@
     data: 1
     type: dword
 
-# Starts GHOSTS in every interactive session of a member of Users, which is the
-# auto-logon user's session after each boot.
-- name: Start GHOSTS at user logon
-  community.windows.win_scheduled_task:
-    name: nano-ghosts
-    description: Simulated user activity for the nano lab (GHOSTS client)
-    actions:
-      - path: '{{ nano_activity_dir }}\x64\ghosts.exe'
-        working_directory: '{{ nano_activity_dir }}\x64'
-    triggers:
-      - type: logon
-    group: BUILTIN\Users
-    logon_type: group
-    run_level: limited
-    multiple_instances: 2
-    execution_time_limit: PT0S
-    state: present
-    enabled: true
+# GHOSTS 9.3.0's Selenium Manager fetches the Edge driver from
+# msedgedriver.azureedge.net, which Microsoft retired. Point it at the current
+# host; GHOSTS does not bundle an Edge driver.
+- name: Point Selenium Manager at the current Edge driver host
+  ansible.windows.win_environment:
+    name: SE_DRIVER_MIRROR_URL
+    value: https://msedgedriver.microsoft.com/
+    level: machine
+  register: _nano_activity_env
+
+# GHOSTS needs the desktop session of the user Ludus logs on automatically.
+# The task runs as that user with an interactive token, at their logon and
+# when started below, so it lands in their session rather than a service one.
+- name: Start GHOSTS in the auto-logon user's session
+  ansible.windows.win_powershell:
+    parameters:
+      Exe: '{{ nano_activity_dir }}\x64\ghosts.exe'
+      WorkDir: '{{ nano_activity_dir }}\x64'
+    script: |
+      param([string]$Exe, [string]$WorkDir)
+      $ErrorActionPreference = 'Stop'
+      $winlogon = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+      if (-not $winlogon.DefaultUserName) { throw 'No auto-logon user is configured on this host' }
+      $user = if ($winlogon.DefaultDomainName) { "$($winlogon.DefaultDomainName)\$($winlogon.DefaultUserName)" } else { $winlogon.DefaultUserName }
+      $existing = Get-ScheduledTask -TaskName nano-ghosts -ErrorAction SilentlyContinue
+      $current = $existing -and $existing.Principal.UserId -eq $user -and
+          $existing.Principal.LogonType -eq 'Interactive' -and $existing.Actions[0].Execute -eq $Exe
+      if (-not $current) {
+          Register-ScheduledTask -TaskName nano-ghosts -Force `
+              -Description 'Simulated user activity for the nano lab (GHOSTS client)' `
+              -Action (New-ScheduledTaskAction -Execute $Exe -WorkingDirectory $WorkDir) `
+              -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $user) `
+              -Principal (New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited) `
+              -Settings (New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew) | Out-Null
+      }
+      $Ansible.Changed = -not $current
+      $Ansible.Result = $user
+  register: _nano_activity_task
 
 - name: Restart GHOSTS with the current configuration
   ansible.windows.win_shell: |
@@ -213,10 +232,12 @@
     not _nano_activity_installed.stat.exists
     or _nano_activity_app is changed
     or _nano_activity_timeline is changed
+    or _nano_activity_env is changed
+    or _nano_activity_task is changed
 
 - name: Report the activity
   ansible.builtin.debug:
     msg: >-
-      GHOSTS {{ nano_activity_ghosts_version }} runs in the logged-on user's
+      GHOSTS {{ nano_activity_ghosts_version }} runs in {{ _nano_activity_task.result }}'s
       session: browsing, PowerShell, Notepad{{ ', Word, Excel and PowerPoint'
       if _nano_activity_office.stat.exists else ' (no Office installed, so no documents)' }}.

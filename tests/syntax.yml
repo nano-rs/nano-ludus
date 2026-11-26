@@ -20,3 +20,10 @@
   roles:
     - nano_sysmon
     - nano_vector_agent
+
+- name: Optional activity roles (nanosiem-activity blueprint)
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - nano_ad_seed
+    - nano_activity

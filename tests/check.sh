@@ -33,10 +33,12 @@ range_config = (root / "blueprints/nanosiem/range-config.yml").read_text()
 errs = []
 vendored = {p.name for p in roles_dir.iterdir() if p.is_dir()}
 
-for ref in sorted(set(re.findall(r"^\s*-\s+(?:name:\s+)?(NanoSIEM\.[a-z_]+)\s*$", range_config, re.M))):
-    name = ref.split(".", 1)[1]
-    if name not in vendored:
-        errs.append(f"range-config uses {ref} but ansible/roles/{name} is not vendored")
+all_range_configs = {p: p.read_text() for p in sorted(root.glob("blueprints/*/range-config.yml"))}
+for cfg_path, cfg_text in all_range_configs.items():
+    for ref in sorted(set(re.findall(r"^\s*-\s+(?:name:\s+)?(NanoSIEM\.[a-z_]+)\s*$", cfg_text, re.M))):
+        name = ref.split(".", 1)[1]
+        if name not in vendored:
+            errs.append(f"{cfg_path.relative_to(root)} uses {ref} but ansible/roles/{name} is not vendored")
 
 if "nano_stack" not in vendored:
     errs.append("ansible/roles/nano_stack is missing")
@@ -83,13 +85,13 @@ stack_defaults = (roles_dir / "nano_stack/defaults/main.yml").read_text()
 pinned = re.search(r'^nanosiem_version: "(2\.\d+\.\d+)"$', stack_defaults, re.M)
 if not pinned or 'nanosiem_ref: "v{{ nanosiem_version }}"' not in stack_defaults:
     errs.append("nano_stack does not pin a v2 open-core release tag")
-range_pin = re.search(r"^\s*nanosiem_version:", range_config, re.M)
-if range_pin:
-    errs.append("range-config sets nanosiem_version; the nano_stack default is its only definition")
+for cfg_path, cfg_text in all_range_configs.items():
+    if re.search(r"^\s*nanosiem_version:", cfg_text, re.M):
+        errs.append(f"{cfg_path.relative_to(root)} sets nanosiem_version; the nano_stack default is its only definition")
+    if re.search(r"^\s*nanosiem_ref:", cfg_text, re.M):
+        errs.append(f"{cfg_path.relative_to(root)} overrides nanosiem_ref; bump the nano_stack nanosiem_version default instead")
 if pinned and tuple(map(int, pinned.group(1).split("."))) < (2, 0, 35):
     errs.append(f"nano_stack pins {pinned.group(1)}; --non-interactive needs 2.0.35 or later")
-if re.search(r"^\s*nanosiem_ref:", range_config, re.M):
-    errs.append("range-config overrides nanosiem_ref; bump the nano_stack nanosiem_version default instead")
 if "ClickHouse" not in stack_text:
     errs.append("nano_stack does not identify the v2 ClickHouse contract")
 if "grep -qw avx2 /proc/cpuinfo" not in stack_text or "x86-64-v3" not in stack_text:
@@ -168,18 +170,21 @@ def config_lines(text):
 def key_of(line):
     return line.strip().lstrip("- ").split(":", 1)[0]
 base_lines = config_lines(range_config)
-activity_kept, activity_marked_keys = [], set()
-marked = False
+# activity_kept: unmarked lines. marked_at[i]: keys of marked lines that sit
+# just before activity_kept[i], where a replaced base line would have been.
+activity_kept, marked_at = [], {}
+pending = False
 for line in activity_config.splitlines():
     stripped = line.strip()
-    if stripped.lstrip("#").strip().startswith("activity:") and stripped.startswith("#"):
-        marked = True
+    if stripped.startswith("#") and stripped.lstrip("#").strip().startswith("activity:"):
+        pending = True
         continue
     if not stripped or stripped.startswith("#"):
+        pending = False
         continue
-    if marked:
-        activity_marked_keys.add(key_of(line))
-        marked = False
+    if pending:
+        marked_at.setdefault(len(activity_kept), []).append(key_of(line))
+        pending = False
         continue
     activity_kept.append(line)
 import difflib
@@ -187,7 +192,8 @@ for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, base_lines, activity_ke
     if tag == "equal":
         continue
     replaced = base_lines[i1:i2]
-    if tag == "delete" and all(key_of(l) in activity_marked_keys for l in replaced):
+    keys_here = list(marked_at.get(j1, []))
+    if tag == "delete" and len(replaced) <= len(keys_here) and all(key_of(l) in keys_here for l in replaced):
         continue
     errs.append(
         "nanosiem-activity range config drifted from nanosiem: "

@@ -17,7 +17,7 @@
 #   - Build required templates: debian-13, win2025-server-tpm, win11-25h2-enterprise
 #     (the two Windows templates come from ludus-source-bsl)
 #
-# Role names below carry the `NanoSIEM.` prefix (NAN-2358). The five nano_*
+# Role names below carry the `NanoSIEM.` prefix (NAN-2358). The nano_*
 # roles are vendored under `ansible/roles/`, and every one of them declares
 # `author: NanoSIEM` in its meta/main.yml — so ansible-galaxy installs them as
 # `NanoSIEM.<role_name>`, not under the bare directory name. Referencing them
