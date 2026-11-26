@@ -59,22 +59,36 @@ read-only home.
 - `NANO_REPO_URL`, `NANO_BRANCH`, and `NANO_INSTALL_DIR`
 - `NANO_SCHEMA_PROFILE=ocsf`
 
-There is no private installer flag, pseudo-TTY, or role-side stack patch. The
-installer owns `.env`, image digest verification, resource sizing, database
-migration, first-admin creation, and stack startup.
+There is no private installer flag or role-side stack patch. The installer owns
+`.env`, image digest verification, resource sizing, database migration,
+first-admin creation, and stack startup.
+
+The role runs `install.sh --non-interactive` (nano 2.0.35 or later). The
+installer never reads the terminal that Ansible's `become` leaves attached, and
+every question the environment above does not answer takes its documented
+default. A missing or invalid required value stops it (exit 1) before it
+changes anything, and the installer log names each value it needs. The role
+also sets `NANO_CONFIRM_UPGRADE=1` over an existing install, because
+non-interactive mode refuses a release upgrade without it. The environment,
+including the admin password, reaches the installer through a root-only file
+that is removed after the run, never through the process command line. The
+installer is stopped after `nanosiem_install_timeout` seconds (default 3600).
 
 When upgrading an existing range, the role stops the exact pre-v2 compose stack
 at `/opt/nanosiem/docker-compose.yml` before running the installer. It does not
 delete that stack's volumes, so its previous lab data remains recoverable.
 
-The public mirror intentionally publishes no git tags. The role checks out
-`main`, whose `images.lock` records the released product, and pins the image
-release separately:
+The range installs the open-core edition only. A customer runs
+`curl -fsSL https://get.nano.rs | bash`, which clones `nano-rs/nano`. The role
+pins one release and checks out its tag, so `install.sh`, the compose files and
+`images.lock` all describe that release. The release is set only by
+`nanosiem_version` in `ansible/roles/nano_stack/defaults/main.yml`, so moving
+the range to a new release is a one-line change there; `nanosiem_ref` derives
+the tag from it.
 
-```yaml
-nanosiem_ref: "main"
-nanosiem_version: "2.0.0"
-```
+It fails if the tag's `images.lock` records a different release. It also
+compares `https://get.nano.rs` with the tagged `install.sh` and reports a
+mismatch without failing; a mismatch usually means a newer release is out.
 
 The role refuses a source whose installer does not identify the v2 product line
 and OCSF/ClickHouse profile contract. It imports and deploys these OCSF parsers
