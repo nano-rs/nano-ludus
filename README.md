@@ -7,7 +7,7 @@ ClickHouse. An optional Conduit proxy adds HTTP activity telemetry.
 
 ```text
 DC01 ─┐
-SRV01 ├─ Vector 0.61 :9000 ─► proxy / aggregator ─ HEC :8088 ─► nano v2
+SRV01 ├─ Vector 0.62 :9000 ─► proxy / aggregator ─ HEC :8088 ─► nano v2
 WS01 ─┘                         + Conduit                         OCSF / ClickHouse
 ```
 
@@ -21,11 +21,12 @@ You need a running Ludus server with the CLI connected
 (`ludus range list` works).
 
 ```bash
-# Build the templates if the server does not already have them.
+# Add the two Windows templates stock Ludus does not ship, then build the
+# templates if the server does not already have them.
+ludus source add ludus-source-bsl --templates win2025-server-x64-tpm-template,win11-25h2-x64-enterprise-template
 ludus templates build -n debian-13-x64-server-template
-ludus templates build -n debian-12-x64-server-template
-ludus templates build -n win2022-server-x64-template
-ludus templates build -n win11-22h2-x64-enterprise-template
+ludus templates build -n win2025-server-x64-tpm-template
+ludus templates build -n win11-25h2-x64-enterprise-template
 
 # Add every source artifact, apply the blueprint, and deploy.
 ludus source add https://github.com/nano-rs/nano-ludus --all
@@ -33,8 +34,17 @@ ludus blueprint apply nano-rs-nano-ludus/nanosiem
 ludus range deploy
 ```
 
-The Debian 13 template is required by the Ludus 2.3.10 router even though the
-blueprint does not name it.
+The range runs current releases: Debian 13 for the SIEM and proxy, Windows
+Server 2025 for DC01 and SRV01, and Windows 11 25H2 for WS01. The Ludus 2.3.10
+router also uses the Debian 13 template. Both Windows templates come from the
+Bad Sector Labs source (`ludus-source-bsl`), which is why the quick start adds
+them first.
+
+Build the Windows Server 2025 template while nothing else runs on the Ludus
+host. At its default 4 GB it needs most of an hour, and it stalls waiting for
+WinRM when the host is short of memory. `ludus templates abort` stops packer
+but leaves its half-built VM running; remove that VM in Proxmox before
+building again.
 
 The SIEM VM must expose AVX2 for ClickHouse 26.6+. The role checks this before
 installing anything and reports the Proxmox CPU-model remediation (`host` or
@@ -47,6 +57,12 @@ never committed. It is stored only on the SIEM VM, mode 0600, in
 and email for operator recovery. The aggregator reads the password through an
 Ansible delegated task. Nothing writes beneath the Ludus controller's
 read-only home.
+
+To confirm events are arriving, run `scripts/range-events.sh [siem-ip] [hours]`
+(defaults `10.1.10.10` and 6). It connects over SSH as `debian`, so it asks for
+that user's SSH and sudo passwords, and prints `nanosiem.ocsf_logs` counts by
+source, OCSF class and host. The query runs inside the `nano-clickhouse`
+container with the credentials it already holds.
 
 ## v2 installer contract
 
@@ -136,20 +152,22 @@ A single shared token is intentionally unsupported.
 
 ## Vector versions
 
-The v2 server compose uses nano's feature-minimized Vector fork. That server
-image omits the Vector and HEC sinks required by the Ludus edge hops, so the
-aggregator and Conduit sidecar use the full upstream Alpine build at the same
-0.61 base version, pinned to its multi-architecture digest. Alpine also
-provides the small wget/awk tools used by the aggregator healthcheck:
+The v2 server compose uses nano's feature-minimized Vector fork, which
+`install.sh` deploys and this range does not change. That server image omits
+the Vector and HEC sinks the Ludus edge hops need, so the collectors run the
+latest upstream Vector. The aggregator and Conduit sidecar use the full Alpine
+build, pinned to its multi-architecture digest. Alpine also provides the small
+wget/awk tools used by the aggregator healthcheck:
 
 ```text
-timberio/vector:0.61.0-alpine
-sha256:3bb7ed5152910ed51729e256937b1d8a4bf67ff624e9d565e8e5877bffd015c7
+timberio/vector:0.62.0-alpine
+sha256:149c77c09aabf16a3aa543abf9cea2e2152c1d9a7d4a45669fe7ad05f4ed8b27
 ```
 
-The Windows collector uses the checksum-pinned official Vector 0.61.0 archive.
-It needs only the stable `windows_event_log` source and Vector sink; nano's
-server-specific changes remain in the Linux image.
+The Windows collector uses the checksum-pinned official Vector 0.62.0 archive.
+It needs only the stable `windows_event_log` source and Vector sink. The
+collectors talk the Vector protocol only to each other and reach nano over HEC,
+so they do not need to match the server's Vector version.
 
 ## Topology and roles
 
@@ -159,9 +177,9 @@ The range is five VMs on VLAN 10:
 | --- | --- | --- |
 | `.10` | SIEM | nano v2 open core, OCSF, ClickHouse, Postgres, Vector, nginx |
 | `.11` | proxy | Vector aggregator plus Conduit |
-| `.20` | DC01 | Windows Server domain controller, Sysmon and Event Logs |
-| `.21` | SRV01 | Windows member server, Sysmon and Event Logs |
-| `.30` | WS01 | Windows 11 workstation, Sysmon and Event Logs |
+| `.20` | DC01 | Windows Server 2025 domain controller, Sysmon and Event Logs |
+| `.21` | SRV01 | Windows Server 2025 member server, Sysmon and Event Logs |
+| `.30` | WS01 | Windows 11 25H2 workstation, Sysmon and Event Logs |
 
 The vendored roles are:
 
@@ -169,7 +187,7 @@ The vendored roles are:
 | --- | --- |
 | `NanoSIEM.nano_stack` | Run the v2 open-core installer and deploy the OCSF parsers |
 | `NanoSIEM.nano_sysmon` | Install the observation-only Sysmon configuration |
-| `NanoSIEM.nano_vector_agent` | Collect Windows Event Logs and Sysmon with Vector 0.61 |
+| `NanoSIEM.nano_vector_agent` | Collect Windows Event Logs and Sysmon with Vector 0.62 |
 | `NanoSIEM.nano_vector_aggregator` | Receive Vector events and forward source-bound HEC |
 | `NanoSIEM.nano_conduit_proxy` | Capture proxy activity and send it to the aggregator |
 
@@ -185,7 +203,7 @@ The gate:
 - enforces the v2/OCSF/ClickHouse policy and exact Vector pins;
 - forbids the retired role/profile artifacts and shared aggregator tokens;
 - renders every Vector scenario from the actual role templates;
-- validates the rendered configs with the v2 Vector image;
+- validates the rendered configs with the pinned Vector 0.62 image;
 - exercises the source-bound token lifecycle against a loopback mock API; and
 - sends real rendered HEC payloads to a loopback receiver, checking distinct
   credentials, raw parser payloads, compression, and HEC acknowledgements.

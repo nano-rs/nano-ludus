@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 ROOT = Path(__file__).resolve().parents[1]
-IMAGE = os.environ.get("VECTOR_IMAGE", "timberio/vector:0.61.0-alpine@sha256:3bb7ed5152910ed51729e256937b1d8a4bf67ff624e9d565e8e5877bffd015c7")
+IMAGE = os.environ.get("VECTOR_IMAGE", "timberio/vector:0.62.0-alpine@sha256:149c77c09aabf16a3aa543abf9cea2e2152c1d9a7d4a45669fe7ad05f4ed8b27")
 SAMPLES = {
     "windows_event": {"event_id": 4624, "event_data": {"TargetUserName": "lab-user"}},
     "windows_sysmon": {"event_id": 1, "event_data": {"Image": "C:\\Windows\\System32\\cmd.exe"}},
